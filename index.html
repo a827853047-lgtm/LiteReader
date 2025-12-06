@@ -9,10 +9,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
-    <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
 
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -32,20 +30,15 @@
         }
     </script>
     
-    <!-- React & ReactDOM -->
     <script crossorigin src="https://cdn.staticfile.net/react/18.2.0/umd/react.production.min.js"></script>
     <script crossorigin src="https://cdn.staticfile.net/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
     
-    <!-- Babel -->
     <script src="https://cdn.staticfile.net/babel-standalone/7.23.5/babel.min.js"></script>
 
-    <!-- PDF.js -->
     <script src="https://cdn.staticfile.net/pdf.js/3.11.174/pdf.min.js"></script>
 
-    <!-- Mammoth.js -->
     <script src="https://cdn.staticfile.net/mammoth/1.6.0/mammoth.browser.min.js"></script>
 
-    <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <style>
@@ -609,27 +602,66 @@
             useEffect(() => { if (autoPlayOnMount) setTimeout(() => toggleTTS(), 500); }, []);
             useEffect(() => { const timer = setInterval(() => { updateProgress(book.id, { addTime: 1 }); }, 60000); return () => { clearInterval(timer); if (synth) synth.cancel(); }; }, []);
             useEffect(() => {
-                if (timerMinutes) { setCountdown(timerMinutes * 60); if (timerRef.current) clearInterval(timerRef.current); timerRef.current = setInterval(() => { setCountdown(prev => { if (prev <= 1) { clearInterval(timerRef.current); setTimerMinutes(null); if (ttsStateRef.current === 'playing') { synth.cancel(); setTtsState('stopped'); setToastMsg("定时结束，已停止朗读"); setTimeout(()=>setToastMsg(null), 3000); } return 0; } return prev - 1; }); }, 1000); } 
+                if (timerMinutes) { setCountdown(timerMinutes * 60); if (timerRef.current) clearInterval(timerRef.current); timerRef.current = setInterval(() => { setCountdown(prev => { if (prev <= 1) { clearInterval(timerRef.current); setTimerMinutes(null); if (ttsStateRef.current === 'playing') { stopTTS(); setToastMsg("定时结束，已停止朗读"); setTimeout(()=>setToastMsg(null), 3000); } return 0; } return prev - 1; }); }, 1000); } 
                 else { if (timerRef.current) clearInterval(timerRef.current); setCountdown(null); }
                 return () => { if (timerRef.current) clearInterval(timerRef.current); };
             }, [timerMinutes]);
 
             const speak = (idx) => {
-                if (!synth) return; if (ttsStateRef.current !== 'playing') return; if (idx >= book.content.length) { setTtsState('stopped'); return; }
+                if (ttsStateRef.current !== 'playing') return; 
+                if (idx >= book.content.length) { setTtsState('stopped'); return; }
+                
                 const pIdx = pages.findIndex(pg => pg.some(i => i.index === idx));
-                if (pIdx !== -1 && pIdx !== currentPage) { setCurrentPage(pIdx); if(contentRef.current) contentRef.current.scrollTop = 0; }
+                if (pIdx !== -1 && pIdx !== currentPage) { 
+                    setCurrentPage(pIdx); 
+                    if(contentRef.current) contentRef.current.scrollTop = 0; 
+                }
                 updateProgress(book.id, { progressIndex: idx });
-                const u = new SpeechSynthesisUtterance(book.content[idx]); window.currentUtterance = u;
-                const curSettings = settingsRef.current; u.rate = curSettings.speechRate;
-                if (settingsRef.current.voiceURI) { const v = synth.getVoices().find(x => x.voiceURI === settingsRef.current.voiceURI); if(v) u.voice = v; }
-                u.onboundary = (event) => { if (event.name === 'sentence' || event.name === 'word') setReadingCharIndex(event.charIndex); };
-                u.onend = () => { if (ttsStateRef.current === 'playing') { setReadingCharIndex(0); speak(idx + 1); } };
-                u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') { if(ttsStateRef.current === 'playing') setTimeout(() => speak(idx+1), 100); } };
-                ttsRef.current = u; synth.speak(u);
+
+                // Modified logic here [cite: 1, 2]
+                if (window.AndroidTTS) {
+                    // Use Android Interface
+                    window.AndroidTTS.speak(book.content[idx]);
+                    // Note: Without a callback from Android, auto-playing the next paragraph is difficult here. 
+                } else if (synth) {
+                     // Original Web Speech API logic
+                    const u = new SpeechSynthesisUtterance(book.content[idx]); window.currentUtterance = u;
+                    const curSettings = settingsRef.current; u.rate = curSettings.speechRate;
+                    if (settingsRef.current.voiceURI) { const v = synth.getVoices().find(x => x.voiceURI === settingsRef.current.voiceURI); if(v) u.voice = v; }
+                    u.onboundary = (event) => { if (event.name === 'sentence' || event.name === 'word') setReadingCharIndex(event.charIndex); };
+                    u.onend = () => { if (ttsStateRef.current === 'playing') { setReadingCharIndex(0); speak(idx + 1); } };
+                    u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') { if(ttsStateRef.current === 'playing') setTimeout(() => speak(idx+1), 100); } };
+                    ttsRef.current = u; synth.speak(u);
+                }
             };
-            const toggleTTS = () => { if (ttsState === 'playing') { synth.cancel(); setTtsState('stopped'); } else { synth.cancel(); setTtsState('playing'); ttsStateRef.current = 'playing'; const currentP = pages[currentPage]; const startIdx = (currentP && currentP.length > 0) ? (currentP.find(p => p.index >= (book.progressIndex||0))?.index || currentP[0].index) : (book.progressIndex || 0); speak(startIdx); } };
+            
+            const stopTTS = () => { 
+                // [cite: 4, 5]
+                if (window.AndroidTTS) {
+                    window.AndroidTTS.stop();
+                }
+                if (synth) synth.cancel(); 
+                setTtsState('stopped'); 
+                if (heartbeatRef.current) clearInterval(heartbeatRef.current); 
+            };
+
+            const toggleTTS = () => { 
+                if (ttsState === 'playing') { 
+                    stopTTS();
+                } else { 
+                    if (window.AndroidTTS) window.AndroidTTS.stop();
+                    if (synth) synth.cancel();
+                    
+                    setTtsState('playing'); 
+                    ttsStateRef.current = 'playing'; 
+                    const currentP = pages[currentPage]; 
+                    const startIdx = (currentP && currentP.length > 0) ? (currentP.find(p => p.index >= (book.progressIndex||0))?.index || currentP[0].index) : (book.progressIndex || 0); 
+                    speak(startIdx); 
+                } 
+            };
+
             const handleParaClick = (idx) => { 
-                if (ttsState === 'playing') { updateProgress(book.id, { progressIndex: idx }); synth.cancel(); setTtsState('playing'); ttsStateRef.current = 'playing'; setTimeout(() => speak(idx), 50); }
+                if (ttsState === 'playing') { updateProgress(book.id, { progressIndex: idx }); stopTTS(); setTtsState('playing'); ttsStateRef.current = 'playing'; setTimeout(() => speak(idx), 50); }
             };
             const saveNote = () => { if (!noteText.trim()) return; const newNotes = [...(book.notes || []), { id: Date.now(), date: Date.now(), content: noteText, paraIndex: book.progressIndex || 0, pageIndex: currentPage }]; updateProgress(book.id, { notes: newNotes }); setNoteText(''); setShowNoteInput(false); setToastMsg("笔记已保存"); setTimeout(() => setToastMsg(null), 2000); };
             const toggleFullScreen = () => { if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(err => {}); } else { if (document.exitFullscreen) { document.exitFullscreen(); } } };
@@ -640,12 +672,12 @@
                 else { setActiveTab(tab); setShowMenu(true); } 
             };
             const ts = useRef(0); const onTouchStart = e => ts.current = e.touches[0].clientX;
-            const onTouchEnd = e => { const d = ts.current - e.changedTouches[0].clientX; if (ts.current < 50 && d < -50) { stopTTS(); onBack(); return; } if (Math.abs(d) > 50) { const next = Math.min(Math.max(0, currentPage + (d > 0 ? 1 : -1)), totalPages - 1); setCurrentPage(next); if (contentRef.current) contentRef.current.scrollTop = 0; if (ttsState === 'playing') { synth.cancel(); speak(pages[next][0].index); } else updateProgress(book.id, { progressIndex: pages[next][0].index }); } };
-            const stopTTS = () => { if (synth) synth.cancel(); setTtsState('stopped'); if (heartbeatRef.current) clearInterval(heartbeatRef.current); };
+            const onTouchEnd = e => { const d = ts.current - e.changedTouches[0].clientX; if (ts.current < 50 && d < -50) { stopTTS(); onBack(); return; } if (Math.abs(d) > 50) { const next = Math.min(Math.max(0, currentPage + (d > 0 ? 1 : -1)), totalPages - 1); setCurrentPage(next); if (contentRef.current) contentRef.current.scrollTop = 0; if (ttsState === 'playing') { stopTTS(); speak(pages[next][0].index); } else updateProgress(book.id, { progressIndex: pages[next][0].index }); } };
 
             const renderParagraph = (text, isCurrentPara, isSplit) => {
                 const splitClass = isSplit ? 'justify-last-line' : '';
-                if (!isCurrentPara || ttsState !== 'playing') return <span className={splitClass} style={textStyle}>{text}</span>; 
+                // AndroidTTS mode usually doesn't support word-level highlighting
+                if (!isCurrentPara || ttsState !== 'playing' || window.AndroidTTS) return <span className={splitClass} style={textStyle}>{text}</span>; 
                 const sentences = splitSentences(text); 
                 return <span className={splitClass} style={textStyle}>{sentences.map((s, i) => { const isActiveSentence = readingCharIndex >= s.start && readingCharIndex < s.end; return <span key={i} className={isActiveSentence ? 'sentence-active' : ''}>{s.text}</span>; })}</span>; 
             };
