@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>LiteReader 轻阅</title>
     <meta name="description" content="极简本地电子书阅读器">
-    <meta name="theme-color" content="#121212">
+    <meta name="theme-color" content="#fcfcfc">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-status-bar-style" content="dark-content">
 
     <link rel="manifest" href="manifest.json">
 
@@ -19,11 +19,13 @@
                 extend: {
                     colors: {
                         dark: { bg: '#000000', surface: '#1c1c1e', text: '#e5e5e7', sub: '#8e8e93' },
-                        light: { bg: '#f2f2f7', surface: '#ffffff', text: '#000000', sub: '#8e8e93' },
+                        light: { bg: '#fcfcfc', surface: '#ffffff', text: '#000000', sub: '#8e8e93' },
                         brand: '#0a84ff'
                     },
-                    padding: {
-                        'safe': 'env(safe-area-inset-bottom)'
+                    spacing: {
+                        'safe-top': 'env(safe-area-inset-top)',
+                        'safe-bottom': 'env(safe-area-inset-bottom)',
+                        'header-h': 'calc(3.5rem + env(safe-area-inset-top))'
                     }
                 }
             }
@@ -32,13 +34,9 @@
     
     <script crossorigin src="https://cdn.staticfile.net/react/18.2.0/umd/react.production.min.js"></script>
     <script crossorigin src="https://cdn.staticfile.net/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-    
     <script src="https://cdn.staticfile.net/babel-standalone/7.23.5/babel.min.js"></script>
-
     <script src="https://cdn.staticfile.net/pdf.js/3.11.174/pdf.min.js"></script>
-
     <script src="https://cdn.staticfile.net/mammoth/1.6.0/mammoth.browser.min.js"></script>
-
     <script src="https://unpkg.com/lucide@latest"></script>
 
     <style>
@@ -49,9 +47,6 @@
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         html { -webkit-tap-highlight-color: transparent; }
         
-        .glass-panel-light { background: rgba(255, 255, 255, 0.98); backdrop-filter: blur(20px); border-top: 1px solid rgba(0,0,0,0.05); }
-        .glass-panel-dark { background: rgba(28, 28, 30, 0.98); backdrop-filter: blur(20px); border-top: 1px solid rgba(255,255,255,0.1); }
-        
         .reading-active-light { background-color: rgba(10, 132, 255, 0.1); color: #000; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
         .reading-active-dark { background-color: rgba(255, 255, 255, 0.08); color: #fff; border-radius: 4px; }
 
@@ -61,7 +56,17 @@
         
         .read-past { opacity: 0.4; filter: grayscale(0.8); transition: opacity 0.5s ease; }
         
-        /* 主题样式 */
+        .label-justify {
+            text-align: left;
+            width: 3.5rem;
+            display: inline-block;
+            margin-right: 0.75rem;
+            white-space: nowrap;
+            font-size: 10px;
+            color: inherit;
+            opacity: 0.7;
+        }
+
         .theme-paper { background-color: #f6f3e8 !important; color: #3b3830 !important; background-image: url("data:image/svg+xml,%3Csvg width='200' height='200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.05'/%3E%3C/svg%3E"); }
         .theme-sepia { background-color: #f6ecd5 !important; color: #5b4636 !important; }
         
@@ -72,7 +77,6 @@
         .custom-range::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: #0a84ff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); margin-top: -7px; }
         .custom-range::-webkit-slider-runnable-track { width: 100%; height: 4px; border-radius: 2px; }
         
-        /* 核心排版：强制两端对齐，填满容器 */
         .text-justify-custom { 
             text-align: justify; 
             text-justify: inter-ideograph; 
@@ -85,6 +89,15 @@
             -moz-text-align-last: justify; 
             -webkit-text-align-last: justify; 
         }
+        .justify-stretch { 
+            text-align-last: justify; 
+            -moz-text-align-last: justify; 
+            -webkit-text-align-last: justify; 
+        }
+        .justify-normal {
+            text-align-last: left;
+            -moz-text-align-last: left;
+        }
     </style>
 </head>
 <body class="antialiased overflow-hidden fixed inset-0 bg-white dark:bg-black text-black dark:text-gray-200 transition-colors duration-300">
@@ -92,19 +105,18 @@
     
     <script>
         window.onerror = function(msg, url, line, col, error) { console.error("Global Error:", msg, error); };
-        
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js').catch((error) => { console.log('SW 注册失败:', error); });
+                // navigator.serviceWorker.register('/sw.js').catch((error) => { console.log('SW 注册失败:', error); });
             });
         }
     </script>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef, useMemo } = React;
+        const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
         const DB_KEY = 'litereader_books_v12'; 
-        const SETTINGS_KEY = 'litereader_settings_v31'; // 升级配置版本
+        const SETTINGS_KEY = 'litereader_settings_v31';
         const MAX_FILE_SIZE_MB = 50;
         
         if (window.pdfjsLib) {
@@ -112,7 +124,15 @@
         }
 
         const getBookCoverStyle = (title) => {
-            const styles = ['bg-gradient-to-br from-indigo-400 to-cyan-400', 'bg-gradient-to-br from-teal-500 to-emerald-500', 'bg-gradient-to-br from-blue-500 to-indigo-600', 'bg-gradient-to-br from-sky-400 to-blue-500', 'bg-gradient-to-br from-violet-500 to-purple-600', 'bg-gradient-to-br from-slate-500 to-gray-700', 'bg-gradient-to-br from-cyan-500 to-blue-400', 'bg-gradient-to-br from-fuchsia-500 to-purple-600'];
+            const styles = [
+                'bg-gradient-to-br from-indigo-400 to-cyan-400', 
+                'bg-gradient-to-br from-teal-500 to-emerald-500', 
+                'bg-gradient-to-br from-blue-500 to-indigo-600', 
+                'bg-gradient-to-br from-sky-400 to-blue-500', 
+                'bg-gradient-to-br from-violet-500 to-purple-600', 
+                'bg-gradient-to-br from-cyan-500 to-blue-400', 
+                'bg-gradient-to-br from-fuchsia-500 to-purple-600'
+            ];
             let hash = 0;
             if (title) for (let i = 0; i < title.length; i++) hash = title.charCodeAt(i) + ((hash << 5) - hash);
             return styles[Math.abs(hash) % styles.length];
@@ -206,7 +226,1039 @@
             return { title, author, totalChars };
         };
 
-        // --- App ---
+        // --- Reader Component ---
+        const Reader = ({ book, settings, setSettings, onBack, updateProgress, isDarkMode, isPaperMode, isSepiaMode, autoPlayOnMount }) => {
+            const [showMenu, setShowMenu] = useState(false);
+            const [showNoteInput, setShowNoteInput] = useState(false); 
+            const [noteText, setNoteText] = useState('');
+            const [quoteText, setQuoteText] = useState(''); 
+            const [activeTab, setActiveTab] = useState('progress'); 
+            const [timerMinutes, setTimerMinutes] = useState(null); 
+            const [countdown, setCountdown] = useState(null); 
+            const [toastMsg, setToastMsg] = useState(null);
+            const [availableVoices, setAvailableVoices] = useState([]); 
+            const [readingCharIndex, setReadingCharIndex] = useState(0); 
+            const [customTimerInput, setCustomTimerInput] = useState(false); 
+            const [customMinutes, setCustomMinutes] = useState('');
+            const [wakeLock, setWakeLock] = useState(null); 
+            const [manualNavigation, setManualNavigation] = useState(false); 
+            
+            const [currentPage, setCurrentPage] = useState(0);
+            const [ttsState, setTtsState] = useState('stopped');
+            const [startTime] = useState(Date.now());
+            
+            const synth = window.speechSynthesis;
+            const contentRef = useRef(null);
+            const ttsRef = useRef(null);
+            const ttsStateRef = useRef(ttsState);
+            const settingsRef = useRef(settings);
+            const heartbeatRef = useRef(null);
+            const timerRef = useRef(null); 
+            const longPressTimer = useRef(null); 
+            const silentAudioRef = useRef(null); // Silent Audio for Background Playback
+            
+            // Touch state refs
+            const touchStartX = useRef(0);
+            const touchStartY = useRef(0);
+            const isSwiping = useRef(false);
+            const isGestureHandled = useRef(false);
+
+            const textStyle = useMemo(() => {
+                let color = isDarkMode ? '#e5e5e7' : '#1f2937';
+                if (isPaperMode) color = '#3b3830';
+                if (isSepiaMode) color = '#5b4636';
+                
+                return { 
+                    fontSize: `${settings.fontSize}px`, 
+                    lineHeight: settings.lineHeight, 
+                    textIndent: 0, 
+                    fontFamily: settings.fontFamily === 'serif' ? '"Noto Serif SC", serif' : '"Noto Sans SC", sans-serif', 
+                    color: color 
+                };
+            }, [settings, isDarkMode, isPaperMode, isSepiaMode]);
+
+            const contentStyle = {
+                paddingTop: 'calc(3.5rem + env(safe-area-inset-top) + 2em)', 
+                paddingBottom: `100px`,
+                paddingLeft: `${settings.pageMargin}px`,
+                paddingRight: `${settings.pageMargin}px`,
+                height: '100vh',
+                boxSizing: 'border-box'
+            };
+
+            const splitSentences = (text) => {
+                const sentences = []; let current = ''; let startIndex = 0;
+                for (let i = 0; i < text.length; i++) { const char = text[i]; current += char; if (/[.!?。！？\n]/.test(char) || i === text.length - 1) { sentences.push({ text: current, start: startIndex, end: startIndex + current.length }); startIndex += current.length; current = ''; } }
+                return sentences;
+            };
+            const chapters = useMemo(() => { if (book.chapters && book.chapters.length > 0) return book.chapters; return detectChapters(book.content); }, [book]);
+            useEffect(() => { ttsStateRef.current = ttsState; }, [ttsState]);
+            useEffect(() => { settingsRef.current = settings; }, [settings]);
+            
+            useEffect(() => { 
+                if(!synth) return; 
+                const load = () => {
+                    let voices = synth.getVoices().filter(v => v.lang.includes('zh') || v.lang.includes('cmn') || v.name.includes('Chinese'));
+                    voices.sort((a, b) => {
+                        const aIsGoogle = a.name.toLowerCase().includes('google');
+                        const bIsGoogle = b.name.toLowerCase().includes('google');
+                        if (aIsGoogle && !bIsGoogle) return -1;
+                        if (!aIsGoogle && bIsGoogle) return 1;
+                        return 0;
+                    });
+                    const defaultOption = { name: "系统默认 (自动选择)", voiceURI: "" };
+                    setAvailableVoices([defaultOption, ...voices]);
+                }; 
+                load(); 
+                if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = load; 
+            }, []);
+
+            // Initialize Silent Audio for Background Playback
+            useEffect(() => {
+                // Short silent WAV
+                silentAudioRef.current = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+                silentAudioRef.current.loop = true;
+
+                return () => {
+                    if (silentAudioRef.current) {
+                        silentAudioRef.current.pause();
+                        silentAudioRef.current = null;
+                    }
+                };
+            }, []);
+
+            const requestWakeLock = async () => {
+                if ('wakeLock' in navigator) {
+                    try {
+                        const lock = await navigator.wakeLock.request('screen');
+                        setWakeLock(lock);
+                    } catch (err) { console.log('Wake Lock Error:', err); }
+                }
+            };
+            const releaseWakeLock = async () => {
+                if (wakeLock) {
+                    try { await wakeLock.release(); setWakeLock(null); } 
+                    catch (err) { console.log('Wake Lock Release Error:', err); }
+                }
+            };
+            
+            const pages = useMemo(() => {
+                const containerWidth = window.innerWidth - (settings.pageMargin * 2); 
+                const charsPerLine = Math.floor(containerWidth / settings.fontSize);
+                const linesPerPage = settings.linesPerPage;
+                const result = []; 
+                let page = []; 
+                let currentLines = 0; 
+
+                const chapterIndices = new Set(book.chapters ? book.chapters.map(c => c.index) : []);
+
+                book.content.forEach((txt, idx) => {
+                    const text = txt.replace(/^\s+/, ''); 
+                    if (text.length === 0) return; 
+                    
+                    const isChapterStart = chapterIndices.has(idx);
+                    if (isChapterStart && page.length > 0) { 
+                        result.push(page); 
+                        page = []; 
+                        currentLines = 0; 
+                    }
+
+                    const textLines = Math.ceil(text.length / charsPerLine);
+                    let remainingText = text;
+                    let remainingLinesInPara = textLines;
+
+                    while (remainingText.length > 0) {
+                        const linesLeftOnPage = linesPerPage - currentLines;
+                        
+                        if (linesLeftOnPage <= 0) {
+                             result.push(page);
+                             page = [];
+                             currentLines = 0;
+                             continue;
+                        }
+
+                        if (remainingLinesInPara <= linesLeftOnPage) {
+                            page.push({ text: remainingText, index: idx, split: false });
+                            currentLines += remainingLinesInPara;
+                            if (currentLines < linesPerPage) currentLines += 0.5; 
+                            remainingText = "";
+                        } else {
+                            let linesToTake = linesLeftOnPage;
+                            if (linesToTake < 1) linesToTake = 1;
+                            
+                            let cutIdx = Math.floor(linesToTake * charsPerLine);
+                            if (cutIdx > remainingText.length) cutIdx = remainingText.length;
+
+                            const chunk = remainingText.substring(0, cutIdx);
+                            page.push({ text: chunk, index: idx, split: true });
+                            
+                            result.push(page);
+                            page = [];
+                            currentLines = 0;
+                            
+                            remainingText = remainingText.substring(cutIdx);
+                            remainingLinesInPara -= linesToTake;
+                        }
+                    }
+                });
+                if (page.length > 0) result.push(page);
+                return result;
+            }, [book.content, settings.linesPerPage, settings.pageMargin, settings.fontSize, chapters]);
+
+            const totalPages = Math.max(1, pages.length);
+            const currentChapterNum = useMemo(() => { if (pages.length === 0 || !pages[currentPage] || pages[currentPage].length === 0) return ""; const firstParaIdx = pages[currentPage][0].index; let chapterIndex = -1; for (let i = 0; i < (book.chapters||[]).length; i++) { if (book.chapters[i].index <= firstParaIdx) { chapterIndex = i; } else { break; } } if (chapterIndex !== -1) return `第${toChineseNum(chapterIndex + 1)}章`; return ""; }, [currentPage, pages, book.chapters]);
+
+            useEffect(() => { const p = pages.findIndex(pg => pg.some(item => item.index === (book.progressIndex || 0))); setCurrentPage(p >= 0 ? p : 0); }, []);
+            useEffect(() => { if (autoPlayOnMount) setTimeout(() => toggleTTS(), 500); }, []);
+            useEffect(() => { const timer = setInterval(() => { updateProgress(book.id, { addTime: 1 }); }, 60000); return () => { clearInterval(timer); if (synth) synth.cancel(); }; }, []);
+            useEffect(() => {
+                if (timerMinutes) { setCountdown(timerMinutes * 60); if (timerRef.current) clearInterval(timerRef.current); timerRef.current = setInterval(() => { setCountdown(prev => { if (prev <= 1) { clearInterval(timerRef.current); setTimerMinutes(null); if (ttsStateRef.current === 'playing') { stopTTS(); setToastMsg("定时结束，已停止朗读"); setTimeout(()=>setToastMsg(null), 3000); } return 0; } return prev - 1; }); }, 1000); } 
+                else { if (timerRef.current) clearInterval(timerRef.current); setCountdown(null); }
+                return () => { if (timerRef.current) clearInterval(timerRef.current); };
+            }, [timerMinutes]);
+
+            // Handle Silent Audio Playback for Background Mode
+            useEffect(() => {
+                if (ttsState === 'playing') {
+                    // Play silent audio to keep background alive
+                    silentAudioRef.current?.play().catch(e => console.log("Silent Audio Error:", e));
+                    
+                    // Update Media Session
+                    if ('mediaSession' in navigator) {
+                        navigator.mediaSession.playbackState = 'playing';
+                        navigator.mediaSession.metadata = new MediaMetadata({
+                            title: book.title,
+                            artist: book.author || 'LiteReader',
+                            album: '正在朗读',
+                            artwork: [{ src: 'https://cdn-icons-png.flaticon.com/512/3389/3389081.png', sizes: '512x512', type: 'image/png' }]
+                        });
+                    }
+                } else {
+                    silentAudioRef.current?.pause();
+                    if ('mediaSession' in navigator) {
+                        navigator.mediaSession.playbackState = 'paused';
+                    }
+                }
+            }, [ttsState, book]);
+
+            const speak = (idx) => {
+                if (ttsStateRef.current !== 'playing') return; 
+                if (idx >= book.content.length) { setTtsState('stopped'); return; }
+                
+                const pIdx = pages.findIndex(pg => pg.some(i => i.index === idx));
+                if (pIdx !== -1 && pIdx !== currentPage) { 
+                    setCurrentPage(pIdx); 
+                    if(contentRef.current) contentRef.current.scrollTop = 0; 
+                }
+                updateProgress(book.id, { progressIndex: idx });
+
+                // 在Android应用中优先使用AndroidTTS
+                if (window.AndroidTTS) {
+                    try {
+                        window.AndroidTTS.speak(book.content[idx], {
+                            rate: settingsRef.current.speechRate,
+                            voiceURI: settingsRef.current.voiceURI
+                        });
+                        // 设置AndroidTTS的回调
+                        window.AndroidTTS.onEnd = () => {
+                            if (ttsStateRef.current === 'playing') {
+                                setReadingCharIndex(0);
+                                speak(idx + 1);
+                            }
+                        };
+                        window.AndroidTTS.onError = () => {
+                            if (ttsStateRef.current === 'playing') {
+                                setTimeout(() => speak(idx + 1), 200);
+                            }
+                        };
+                    } catch (e) {
+                        console.error('AndroidTTS error:', e);
+                        // 如果AndroidTTS出错，尝试使用synth
+                        if (synth) {
+                            useSynth(idx);
+                        }
+                    }
+                } else if (synth) {
+                    useSynth(idx);
+                } else {
+                    // 如果都不可用，显示错误信息并停止
+                    setToastMsg('语音合成不可用');
+                    stopTTS();
+                }
+            };
+
+            // 使用浏览器的Web Speech API
+            const useSynth = (idx) => {
+                if (!synth || ttsStateRef.current !== 'playing') return;
+                
+                synth.cancel(); 
+                setTimeout(() => {
+                    if (ttsStateRef.current !== 'playing') return;
+
+                    const textToSpeak = book.content[idx];
+                    if (!textToSpeak || textToSpeak.trim().length === 0) {
+                        speak(idx + 1); 
+                        return;
+                    }
+
+                    try {
+                        const u = new SpeechSynthesisUtterance(textToSpeak); 
+                        window.currentUtterance = u; 
+                        const curSettings = settingsRef.current; 
+                        u.rate = curSettings.speechRate;
+                        
+                        if (curSettings.voiceURI) { 
+                            const v = synth.getVoices().find(x => x.voiceURI === curSettings.voiceURI); 
+                            if(v) u.voice = v; 
+                        }
+                        
+                        const relevantPages = [];
+                        let accumulatedLength = 0;
+                        pages.forEach((page, pgIndex) => {
+                             const segment = page.find(item => item.index === idx);
+                             if (segment) {
+                                 relevantPages.push({
+                                     pageIndex: pgIndex,
+                                     start: accumulatedLength,
+                                     end: accumulatedLength + segment.text.length
+                                 });
+                                 accumulatedLength += segment.text.length;
+                             }
+                        });
+
+                        u.onboundary = (event) => { 
+                            if (event.name === 'sentence' || event.name === 'word') { 
+                                const charIdx = event.charIndex;
+                                setReadingCharIndex(charIdx); 
+                                const target = relevantPages.find(p => charIdx >= p.start && charIdx < p.end);
+                                if (target) {
+                                    setCurrentPage(prev => {
+                                        if (prev !== target.pageIndex) {
+                                            if(contentRef.current) contentRef.current.scrollTop = 0;
+                                            return target.pageIndex;
+                                        }
+                                        return prev;
+                                    });
+                                }
+                            } 
+                        };
+
+                        u.onend = () => { 
+                            if (ttsStateRef.current === 'playing') {
+                                setReadingCharIndex(0); 
+                                speak(idx + 1); 
+                            }
+                        };
+                        u.onerror = (e) => { 
+                            console.error('SpeechSynthesis error:', e);
+                            if (e.error !== 'interrupted' && e.error !== 'canceled') {
+                                if(ttsStateRef.current === 'playing') setTimeout(() => speak(idx+1), 200); 
+                            } 
+                        };
+                        ttsRef.current = u; 
+                        synth.speak(u);
+                    } catch (e) {
+                        console.error('Synth initialization error:', e);
+                        // 如果synth出错，停止TTS
+                        setToastMsg('语音合成失败');
+                        stopTTS();
+                    }
+                }, 50); 
+            };
+            
+            const stopTTS = () => { 
+                if (window.AndroidTTS) window.AndroidTTS.stop();
+                if (synth) synth.cancel(); 
+                setTtsState('stopped'); 
+                releaseWakeLock(); 
+                if (heartbeatRef.current) clearInterval(heartbeatRef.current); 
+            };
+
+            const toggleTTS = () => { 
+                if (ttsState === 'playing') { 
+                    stopTTS();
+                } else { 
+                    if (window.AndroidTTS) window.AndroidTTS.stop();
+                    if (synth) synth.cancel();
+                    
+                    setTtsState('playing'); 
+                    ttsStateRef.current = 'playing'; 
+                    requestWakeLock(); 
+                    
+                    const currentP = pages[currentPage]; 
+                    
+                    let startIdx;
+                    if (manualNavigation && currentP && currentP.length > 0) {
+                        startIdx = currentP[0].index;
+                        setManualNavigation(false); 
+                    } else {
+                        startIdx = (currentP && currentP.length > 0) ? (currentP.find(p => p.index >= (book.progressIndex||0))?.index || currentP[0].index) : (book.progressIndex || 0); 
+                    }
+                    
+                    speak(startIdx); 
+                } 
+            };
+
+            // Bind Media Session Handlers
+            useEffect(() => {
+                if (!('mediaSession' in navigator)) return;
+
+                const handleNext = () => {
+                    const next = Math.min(Math.max(0, currentPage + 1), totalPages - 1);
+                    setCurrentPage(next);
+                    if (contentRef.current) contentRef.current.scrollTop = 0;
+                    if (ttsStateRef.current === 'playing') {
+                        stopTTS(); 
+                        speak(pages[next][0].index); 
+                    } else {
+                        updateProgress(book.id, { progressIndex: pages[next][0].index });
+                    }
+                };
+                
+                const handlePrev = () => {
+                    const prev = Math.min(Math.max(0, currentPage - 1), totalPages - 1);
+                    setCurrentPage(prev);
+                    if (contentRef.current) contentRef.current.scrollTop = 0;
+                    if (ttsStateRef.current === 'playing') {
+                        stopTTS(); 
+                        speak(pages[prev][0].index); 
+                    } else {
+                        updateProgress(book.id, { progressIndex: pages[prev][0].index });
+                    }
+                };
+
+                navigator.mediaSession.setActionHandler('play', () => { if(ttsStateRef.current !== 'playing') toggleTTS(); });
+                navigator.mediaSession.setActionHandler('pause', () => { if(ttsStateRef.current === 'playing') toggleTTS(); });
+                navigator.mediaSession.setActionHandler('previoustrack', handlePrev);
+                navigator.mediaSession.setActionHandler('nexttrack', handleNext);
+                navigator.mediaSession.setActionHandler('stop', () => stopTTS());
+
+            }, [currentPage, pages, totalPages, toggleTTS]); 
+
+            const handleParaClick = (idx) => { 
+                if (ttsState === 'playing') { updateProgress(book.id, { progressIndex: idx }); stopTTS(); setTtsState('playing'); ttsStateRef.current = 'playing'; setTimeout(() => speak(idx), 50); }
+            };
+
+            const handleTouchStart = (e) => {
+                if (!e || !e.touches || e.touches.length === 0) return;
+                
+                touchStartX.current = e.touches[0].clientX;
+                touchStartY.current = e.touches[0].clientY;
+                isSwiping.current = false;
+                isGestureHandled.current = false;
+
+                let targetText = "";
+                let target = e.target;
+                while (target && target !== contentRef.current) {
+                    if (target.tagName === 'P') {
+                        targetText = target.innerText;
+                        break;
+                    }
+                    target = target.parentElement;
+                }
+
+                if (targetText) {
+                    longPressTimer.current = setTimeout(() => {
+                        if (!isSwiping.current) {
+                            setQuoteText(targetText);
+                            setNoteText('');
+                            setShowNoteInput(true);
+                            isGestureHandled.current = true; 
+                            if (window.navigator && window.navigator.vibrate) {
+                                window.navigator.vibrate(50);
+                            }
+                        }
+                    }, 1200); 
+                }
+            };
+
+            const handleTouchMove = (e) => {
+                 if (!e || !e.touches || e.touches.length === 0) return;
+                 const x = e.touches[0].clientX;
+                 const y = e.touches[0].clientY;
+                 
+                 if (Math.abs(x - touchStartX.current) > 10 || Math.abs(y - touchStartY.current) > 10) {
+                     isSwiping.current = true;
+                     if (longPressTimer.current) {
+                         clearTimeout(longPressTimer.current);
+                         longPressTimer.current = null;
+                     }
+                 }
+            };
+
+            const handleTouchEnd = (e) => {
+                if (longPressTimer.current) {
+                    clearTimeout(longPressTimer.current);
+                    longPressTimer.current = null;
+                }
+
+                if (isSwiping.current) {
+                    const diffX = e.changedTouches[0].clientX - touchStartX.current;
+                    if (Math.abs(diffX) > 50) {
+                        const next = Math.min(Math.max(0, currentPage + (diffX > 0 ? -1 : 1)), totalPages - 1);
+                        setCurrentPage(next);
+                        if (contentRef.current) contentRef.current.scrollTop = 0;
+                        if (ttsState === 'playing') {
+                             stopTTS(); 
+                             speak(pages[next][0].index); 
+                        } else {
+                            updateProgress(book.id, { progressIndex: pages[next][0].index });
+                        }
+                        isGestureHandled.current = true; 
+                    }
+                }
+            };
+
+            const handleContentClick = () => { 
+                if (!isGestureHandled.current && !showNoteInput) {
+                    if (showMenu) { setShowMenu(false); } 
+                    else { setShowMenu(true); setActiveTab('progress'); }
+                }
+                isGestureHandled.current = false;
+            };
+
+            const jumpToChapter = (idx) => { 
+                const pIdx = pages.findIndex(pg => pg.some(i => i.index >= idx)); 
+                if (pIdx !== -1) { 
+                    setCurrentPage(pIdx); 
+                    updateProgress(book.id, { progressIndex: pages[pIdx][0].index }); 
+                    if(contentRef.current) contentRef.current.scrollTop = 0; 
+                } 
+                setShowMenu(false); 
+            };
+
+            const saveNote = () => { 
+                if (!noteText.trim() && !quoteText.trim()) return; 
+                const newNotes = [
+                    ...(book.notes || []), 
+                    { 
+                        id: Date.now(), 
+                        date: Date.now(), 
+                        content: noteText, 
+                        quote: quoteText,
+                        paraIndex: book.progressIndex || 0, 
+                        pageIndex: currentPage,
+                        pageNo: currentPage + 1,
+                        chapter: currentChapterNum
+                    }
+                ]; 
+                updateProgress(book.id, { notes: newNotes }); 
+                setNoteText(''); 
+                setQuoteText('');
+                setShowNoteInput(false); 
+                setToastMsg("笔记已保存"); 
+                setTimeout(() => setToastMsg(null), 2000); 
+            };
+            
+            const toggleFullScreen = () => { if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(err => {}); } else { if (document.exitFullscreen) { document.exitFullscreen(); } } };
+            
+            const handleTabClick = (tab) => { 
+                if (activeTab === tab && showMenu) { setShowMenu(false); } 
+                else { setActiveTab(tab); setShowMenu(true); } 
+            };
+
+            let menuBgClass = 'bg-white';
+            let menuTextClass = 'text-gray-800';
+            let menuBorderClass = 'border-gray-200';
+            
+            if (isPaperMode) { menuBgClass = 'bg-[#f6f3e8]'; menuTextClass = 'text-[#3b3830]'; menuBorderClass = 'border-[#3b3830]/10'; }
+            else if (isSepiaMode) { menuBgClass = 'bg-[#f6ecd5]'; menuTextClass = 'text-[#5b4636]'; menuBorderClass = 'border-[#5b4636]/10'; }
+            else if (isDarkMode) { menuBgClass = 'bg-[#1c1c1e]'; menuTextClass = 'text-[#e5e5e7]'; menuBorderClass = 'border-white/10'; }
+
+            const renderParagraph = (text, isCurrentPara, isSplit) => {
+                const splitClass = isSplit ? 'justify-stretch' : 'justify-normal';
+                
+                if (!isCurrentPara || ttsState !== 'playing' || window.AndroidTTS) {
+                    return <span className={splitClass} style={textStyle}>{text}</span>; 
+                }
+                const sentences = splitSentences(text); 
+                return <span className={splitClass} style={textStyle}>{sentences.map((s, i) => { const isActiveSentence = readingCharIndex >= s.start && readingCharIndex < s.end; return <span key={i} className={isActiveSentence ? 'sentence-active' : ''}>{s.text}</span>; })}</span>; 
+            };
+            
+            if (!pages[currentPage]) return <div className="h-full flex items-center justify-center">加载中...</div>;
+
+            return (
+                <div className={`flex flex-col h-full relative ${isPaperMode ? 'theme-paper' : (isSepiaMode ? 'theme-sepia' : (isDarkMode ? 'bg-[#121212] text-gray-200' : 'bg-white text-gray-800'))}`}>
+                    {/* Top Menu */}
+                    <div className={`fixed top-0 inset-x-0 z-20 flex items-center px-4 transition-transform duration-300 ${showMenu ? 'translate-y-0' : '-translate-y-full'} ${menuBgClass} ${menuTextClass} border-b ${menuBorderClass} h-header-h pt-safe-top`}>
+                        <button onClick={() => {stopTTS(); onBack();}} className="p-2 -ml-2"><Icon name="chevron-left" /></button>
+                        <span className="flex-1 text-center text-sm font-bold truncate px-2 opacity-80">{book.title}</span>
+                        <div className="flex items-center gap-2 -mr-2">
+                            <button onClick={() => { setQuoteText(''); setNoteText(''); setShowNoteInput(true); }} className="p-2"><Icon name="edit-3" /></button>
+                        </div>
+                    </div>
+
+                    <div 
+                        ref={contentRef} 
+                        className="flex-1 overflow-y-auto no-scrollbar animate-slide reader-content" 
+                        style={contentStyle} 
+                        onClick={handleContentClick} 
+                        onTouchStart={handleTouchStart}
+                        onTouchMove={handleTouchMove}
+                        onTouchEnd={handleTouchEnd}
+                    >
+                        {pages[currentPage].map((item, i) => {
+                        const isActive = item.index === (book.progressIndex || 0);
+                        const isPast = item.index < (book.progressIndex || 0);
+                        let activeClass = isDarkMode ? 'reading-active-dark' : 'reading-active-light';
+                        if (isPaperMode) activeClass = 'reading-active-paper';
+                        if (isSepiaMode) activeClass = 'reading-active-light';
+                        
+                        const isPlaying = ttsState === 'playing';
+                        const finalClass = `mb-4 break-words text-justify-custom ${isPlaying && isActive ? activeClass : ''} ${isPlaying && isPast ? 'read-past' : ''}`;
+
+                        return (
+                            <p key={i} className={finalClass}>
+                                {renderParagraph(item.text, isActive, item.split)}
+                            </p>
+                        )
+                    })}</div>
+                    
+                    {!showMenu && (
+                        <>
+                            <div className="fixed text-xs font-medium opacity-40 truncate max-w-[80%] pointer-events-none" 
+                                 style={{ top: 'max(12px, env(safe-area-inset-top))', left: settings.pageMargin, color: 'inherit' }}>
+                                {currentChapterNum || book.title}
+                            </div>
+                            <div className="fixed bottom-3 text-xs font-medium opacity-40 pointer-events-none" 
+                                 style={{ left: settings.pageMargin, color: 'inherit' }}>
+                                {currentPage + 1} / {totalPages}
+                            </div>
+                        </>
+                    )}
+                    
+                    {toastMsg && <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-black/80 text-white text-xs px-4 py-2 rounded-full shadow-lg">{toastMsg}</div>}
+                    
+                    {showNoteInput && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={()=>setShowNoteInput(false)}>
+                            <div className="w-4/5 max-w-sm bg-white dark:bg-[#1e1e1e] p-5 rounded-2xl" onClick={e=>e.stopPropagation()}>
+                                <h3 className="text-lg font-bold mb-3">添加笔记</h3>
+                                {quoteText && (
+                                    <div className="mb-4 p-3 bg-gray-100 dark:bg-white/5 rounded-lg text-xs text-gray-500 italic border-l-2 border-brand relative">
+                                        <div className="line-clamp-4">{quoteText}</div>
+                                        <button onClick={()=>setQuoteText('')} className="absolute top-1 right-1 p-1 opacity-50"><Icon name="x" size={12}/></button>
+                                    </div>
+                                )}
+                                <textarea className="w-full h-32 bg-gray-100 dark:bg-black/30 p-2 rounded-xl mb-4 text-sm" value={noteText} onChange={e=>setNoteText(e.target.value)} placeholder="写笔记..." />
+                                <div className="flex gap-2">
+                                    <button onClick={()=>setShowNoteInput(false)} className="flex-1 py-2 bg-gray-200 dark:bg-white/10 rounded-xl text-xs">取消</button>
+                                    <button onClick={saveNote} className="flex-1 py-2 bg-brand text-white rounded-xl text-xs">保存</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {customTimerInput && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setCustomTimerInput(false)}><div className="w-4/5 max-w-sm bg-white dark:bg-[#1e1e1e] p-5 rounded-2xl" onClick={e => e.stopPropagation()}><h3 className="text-lg font-bold mb-3">自定义时间 (分钟)</h3><input type="number" className="w-full p-3 rounded-xl mb-4 bg-gray-100 dark:bg-black/30 text-center text-lg outline-none" value={customMinutes} onChange={e => setCustomMinutes(e.target.value)} autoFocus /><div className="flex gap-2"><button onClick={() => setCustomTimerInput(false)} className="flex-1 py-2 bg-gray-200 dark:bg-white/10 rounded-xl text-xs">取消</button><button onClick={() => { if (customMinutes && !isNaN(customMinutes)) { setTimerMinutes(parseInt(customMinutes)); setCustomTimerInput(false); } }} className="flex-1 py-2 bg-brand text-white rounded-xl text-xs">确定</button></div></div></div>}
+
+                    <div className={`fixed right-6 flex flex-col gap-4 z-30 transition-all duration-300 ${showMenu ? 'bottom-72' : 'bottom-8'}`}>
+                        <button onClick={(e) => { e.stopPropagation(); toggleTTS(); }} className={`w-14 h-14 rounded-full shadow-xl flex items-center justify-center btn-active transition-all ${ttsState === 'playing' ? 'bg-brand text-white animate-breathe-glow' : (isDarkMode ? 'bg-gray-800 text-white border border-white/10' : 'bg-white text-gray-800 border border-gray-100')}`}><Icon name={ttsState === 'playing' ? "pause" : "headphones"} size={24} fill={ttsState === 'playing' ? "currentColor" : "none"} /></button>
+                    </div>
+                    
+                    <div className={`fixed bottom-0 inset-x-0 z-30 transition-transform duration-300 ${showMenu ? 'translate-y-0' : 'translate-y-full'} ${menuBgClass} ${menuTextClass} border-t ${menuBorderClass}`}>
+                        <div className="p-6 pb-20 space-y-6 max-h-[45vh] overflow-y-auto no-scrollbar">
+                            {activeTab === 'toc' && <div className="animate-fade-in h-full"><div className="flex justify-between items-center mb-4"><span className="font-bold">目录</span><span className="text-xs opacity-60">共 {chapters.length} 章</span></div><div className="space-y-1">{chapters.length === 0 ? <div className="text-center py-10 opacity-50 text-xs">未识别到目录</div> : chapters.map((c, i) => <div key={i} onClick={() => jumpToChapter(c.index)} className={`p-3 text-sm rounded-lg cursor-pointer ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-black/5'}`}>{c.title}</div>)}</div></div>}
+                            {activeTab === 'progress' && <div className="space-y-6 animate-fade-in"><div className="flex justify-between items-center text-center"><div><span className="text-xl font-bold block">{Math.max(1, Math.round(((currentPage+1)/totalPages)*100))}%</span><div className="text-[10px] opacity-60 flex items-center gap-1 justify-center">阅读进度 {countdown && <span className="text-brand ml-1">{Math.floor(countdown/60)}分后关闭</span>}</div></div><div className="w-[1px] h-4 bg-gray-500/30"></div><div className="text-right"><div className="text-xs font-bold text-brand">本次阅读时长: {Math.max(1, Math.floor((Date.now() - startTime)/60000))}分</div><div className="text-[10px] opacity-60">总阅读时长: {Math.max(1, book.totalTime || 0)}分</div></div></div><input type="range" min="0" max={totalPages - 1} value={currentPage} onChange={e => { setCurrentPage(parseInt(e.target.value)); setManualNavigation(true); if(contentRef.current) contentRef.current.scrollTop = 0; }} className={`custom-range ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`} /></div>}
+                            {activeTab === 'layout' && <div className="space-y-4 animate-fade-in">
+                                <div className="flex items-center justify-between text-gray-500">
+                                    <span className="label-justify">字体大小</span>
+                                    <div className="flex items-center gap-2 flex-1">
+                                        <span className="text-xs font-serif">A-</span>
+                                        <input type="range" min="12" max="32" step="2" value={settings.fontSize} onChange={e => setSettings({...settings, fontSize: parseInt(e.target.value)})} className={`flex-1 h-1 rounded-lg appearance-none cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-gray-300'} accent-brand`}/>
+                                        <span className="text-lg font-serif">A+</span>
+                                    </div>
+                                </div>
+                                <div className="flex items-center justify-between text-gray-500">
+                                    <span className="label-justify">单页行数</span>
+                                    <div className={`flex flex-1 rounded-lg p-1 gap-1 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>{[ { label: '少', val: 16 }, { label: '适中', val: 18 }, { label: '多', val: 20 } ].map(opt => (<button key={opt.val} onClick={() => setSettings({...settings, linesPerPage: opt.val})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.linesPerPage === opt.val ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>{opt.label}</button>))}</div>
+                                </div>
+                                <div className="flex items-center justify-between text-gray-500">
+                                    <span className="label-justify">页边距</span>
+                                    <div className={`flex flex-1 rounded-lg p-1 gap-1 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}><button onClick={() => setSettings({...settings, pageMargin: 20})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.pageMargin === 20 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>小</button><button onClick={() => setSettings({...settings, pageMargin: 30})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.pageMargin === 30 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>适中</button><button onClick={() => setSettings({...settings, pageMargin: 40})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.pageMargin === 40 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>大</button></div>
+                                </div>
+                                <div className="flex items-center justify-between text-gray-500">
+                                    <span className="label-justify">行间距</span>
+                                    <div className={`flex flex-1 rounded-lg p-1 gap-1 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}><button onClick={() => setSettings({...settings, lineHeight: 1.4})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.lineHeight === 1.4 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>紧</button><button onClick={() => setSettings({...settings, lineHeight: 1.8})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.lineHeight === 1.8 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>适中</button><button onClick={() => setSettings({...settings, lineHeight: 2.2})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.lineHeight === 2.2 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>松</button></div>
+                                </div>
+                            </div>}
+                            {activeTab === 'voice' && <div className="space-y-4 animate-fade-in">
+                                <div className="flex items-center justify-between text-gray-500">
+                                    <span className="label-justify">音色</span>
+                                    <div className="flex-1 relative"><select className={`w-full text-xs p-2 rounded-lg outline-none appearance-none ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-black'}`} value={settings.voiceURI||''} onChange={e => setSettings({...settings, voiceURI: e.target.value})}>{availableVoices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}</select><Icon name="chevron-down" size={14} className="absolute right-2 top-3 pointer-events-none"/></div>
+                                </div>
+                                <div className="flex items-center justify-between text-gray-500">
+                                    <span className="label-justify">语速</span>
+                                    <div className="flex items-center gap-2 flex-1"><input type="range" min="0.5" max="2.0" step="0.1" value={settings.speechRate} onChange={(e) => setSettings({...settings, speechRate: parseFloat(e.target.value)})} className={`flex-1 h-1 rounded-lg appearance-none cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-gray-300'} accent-brand`}/><span className="text-xs font-bold w-8 text-right">{settings.speechRate}x</span></div>
+                                </div>
+                                <div className="flex items-center justify-between text-gray-500">
+                                    <span className="label-justify">定时关闭</span>
+                                    <div className={`flex flex-1 rounded-lg p-1 gap-1 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>{[ { label: '不开启', val: null }, { label: '30分', val: 30 }, { label: '60分', val: 60 }, { label: '自定义', val: 'custom' } ].map(opt => (<button key={opt.label} onClick={() => { if(opt.val === 'custom') { setCustomTimerInput(true); setCustomMinutes(''); } else { setTimerMinutes(opt.val); } }} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${timerMinutes === opt.val || (opt.val==='custom' && timerMinutes && ![30,60].includes(timerMinutes)) ? 'bg-brand shadow text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>{opt.label}</button>))}</div>
+                                </div>
+                            </div>}
+                            {activeTab === 'theme' && <div className="space-y-4 animate-fade-in">
+                                <div className="flex items-center justify-between text-gray-500">
+                                    <span className="label-justify">背景</span>
+                                    <div className="flex justify-between gap-2 flex-1">{['light', 'sepia', 'paper', 'dark'].map(t => (<button key={t} onClick={() => setSettings({...settings, theme: t})} className={`flex-1 py-2 rounded-xl border text-xs ${settings.theme === t ? 'border-brand text-brand font-bold bg-brand/10' : 'border-transparent bg-gray-100 dark:bg-white/5'}`}>{t === 'light' ? '浅色' : t === 'sepia' ? '护眼' : t === 'paper' ? '纸质' : '深色'}</button>))}</div>
+                                </div>
+                                <div className="flex items-center justify-between text-gray-500 animate-fade-in">
+                                    <span className="label-justify">亮度</span>
+                                    <div className="flex items-center gap-2 flex-1"><Icon name="sun" size={14} /><input type="range" min="20" max="100" step="5" value={settings.brightness || 100} onChange={(e) => setSettings({...settings, brightness: parseInt(e.target.value)})} className={`flex-1 h-1 rounded-lg appearance-none cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-gray-300'} accent-brand`}/><span className="text-xs font-bold w-8 text-right">{settings.brightness || 100}%</span></div>
+                                </div>
+                            </div>}
+                        </div>
+
+                        {/* Bottom Nav (Permanent) */}
+                        <div className={`absolute bottom-0 w-full flex justify-around items-center h-14 border-t ${isDarkMode ? 'bg-[#121212] border-white/10' : 'bg-white border-gray-200'}`}>
+                            <button onClick={() => handleTabClick('toc')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'toc' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><Icon name="align-left" size={20} /><span className="text-[10px]">目录</span></button>
+                            <button onClick={() => handleTabClick('progress')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'progress' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><Icon name="sliders-horizontal" size={20} /><span className="text-[10px]">进度</span></button>
+                            <button onClick={() => handleTabClick('layout')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'layout' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><span className="font-serif text-lg font-bold leading-none">A</span><span className="text-[10px]">版式</span></button>
+                            <button onClick={() => handleTabClick('voice')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'voice' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><Icon name="mic" size={20} /><span className="text-[10px]">朗读</span></button>
+                            <button onClick={() => handleTabClick('theme')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'theme' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><Icon name={isDarkMode ? "moon" : "sun"} size={20} /><span className="text-[10px]">显示</span></button>
+                        </div>
+                    </div>
+                    <div className="pointer-events-none fixed inset-0 z-50 bg-black transition-opacity duration-300" style={{ opacity: (100 - (settings.brightness || 100)) / 100 }}></div>
+                </div>
+            );
+        };
+
+        // --- Me Page Component ---
+        const MePage = ({ settings, setSettings, books, setBooks }) => {
+            const [showNotesList, setShowNotesList] = useState(false);
+            const [statsDetail, setStatsDetail] = useState(null); 
+            
+            // Notes States
+            const [sortMethod, setSortMethod] = useState('time'); 
+            const [isNoteSelectionMode, setIsNoteSelectionMode] = useState(false);
+            const [selectedNoteIds, setSelectedNoteIds] = useState(new Set());
+
+            const stats = useMemo(() => {
+                let totalDuration = 0; let finishedCount = 0; let readingCount = 0; let monthDuration = 0; let totalNotes = 0;
+                const currentMonthPrefix = new Date().toISOString().slice(0, 7); 
+                const booksReadThisMonth = new Set();
+                const dailyReading = {};
+                const booksWithProgress = [];
+
+                const allNotes = [];
+                books.forEach(b => {
+                    totalDuration += (b.totalTime || 0);
+                    const progress = b.content.length > 0 ? (b.progressIndex / b.content.length) : 0;
+                    if (progress > 0.99) finishedCount++; else if (progress > 0) readingCount++;
+                    
+                    if (b.readingLogs) { 
+                        Object.entries(b.readingLogs).forEach(([date, time]) => { 
+                            if (date.startsWith(currentMonthPrefix)) { 
+                                monthDuration += time; 
+                                booksReadThisMonth.add(b.id); 
+                                dailyReading[date] = (dailyReading[date] || 0) + time;
+                            } 
+                        }); 
+                    }
+                    
+                    if (booksReadThisMonth.has(b.id)) {
+                        booksWithProgress.push({ title: b.title, progress: Math.round(progress * 100) });
+                    }
+
+                    if (b.notes && b.notes.length > 0) { 
+                        totalNotes += b.notes.length; 
+                        b.notes.forEach(note => allNotes.push({...note, bookTitle: b.title, bookId: b.id})); 
+                    }
+                });
+                
+                if (sortMethod === 'time') {
+                    allNotes.sort((a, b) => b.date - a.date);
+                } else {
+                    allNotes.sort((a, b) => a.bookTitle.localeCompare(b.bookTitle));
+                }
+
+                return { 
+                    totalHours: Math.floor(totalDuration / 60), 
+                    totalMins: totalDuration % 60, 
+                    finished: finishedCount, 
+                    reading: readingCount, 
+                    monthBooks: booksReadThisMonth.size, 
+                    monthHours: (monthDuration / 60).toFixed(1), 
+                    totalNotes, 
+                    allNotes, 
+                    dailyReading, 
+                    booksWithProgress
+                };
+            }, [books, sortMethod]);
+
+            // Fix delete notes logic
+            const handleDeleteNotes = () => {
+                if (confirm(`确定删除选中的 ${selectedNoteIds.size} 条笔记?`)) {
+                    setBooks(prevBooks => {
+                        const newBooks = prevBooks.map(b => {
+                            if (!b.notes || b.notes.length === 0) return b;
+                            // Filter notes
+                            const newNotes = b.notes.filter(n => !selectedNoteIds.has(n.id));
+                            if (newNotes.length !== b.notes.length) {
+                                return { ...b, notes: newNotes };
+                            }
+                            return b;
+                        });
+                        return newBooks;
+                    });
+                    setSelectedNoteIds(new Set());
+                    setIsNoteSelectionMode(false);
+                }
+            };
+
+            const toggleNoteSelection = (id) => {
+                const newSet = new Set(selectedNoteIds);
+                if (newSet.has(id)) newSet.delete(id);
+                else newSet.add(id);
+                setSelectedNoteIds(newSet);
+            };
+
+            const renderStatsDetailModal = () => {
+                if (!statsDetail) return null;
+                return (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setStatsDetail(null)}>
+                        <div className="w-4/5 max-w-sm bg-white dark:bg-[#1e1e1e] p-6 rounded-2xl max-h-[60vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                            <h3 className="text-lg font-bold mb-4">{statsDetail === 'books' ? '本月阅读书籍' : '本月阅读趋势'}</h3>
+                            {statsDetail === 'books' ? (
+                                <div className="space-y-3">
+                                    {stats.booksWithProgress.length > 0 ? stats.booksWithProgress.map((b, i) => (
+                                        <div key={i} className="flex justify-between items-center p-3 bg-gray-50 dark:bg-white/5 rounded-xl">
+                                            <span className="font-medium text-sm truncate max-w-[70%]">{b.title}</span>
+                                            <span className="text-xs text-brand font-mono">{b.progress}%</span>
+                                        </div>
+                                    )) : <div className="text-center text-gray-400 py-4 text-sm">本月暂无阅读记录</div>}
+                                </div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {Object.keys(stats.dailyReading).length > 0 ? Object.entries(stats.dailyReading).sort().map(([date, time], i) => (
+                                        <div key={i} className="flex items-center gap-2 text-xs">
+                                            <span className="w-12 text-gray-400">{date.slice(5)}</span>
+                                            <div className="flex-1 h-2 bg-gray-100 dark:bg-white/10 rounded-full overflow-hidden">
+                                                <div className="h-full bg-brand" style={{width: `${Math.min(100, (time/120)*100)}%`}}></div>
+                                            </div>
+                                            <span className="w-8 text-right">{time}m</span>
+                                        </div>
+                                    )) : <div className="text-center text-gray-400 py-4 text-sm">本月暂无阅读数据</div>}
+                                </div>
+                            )}
+                            <button onClick={() => setStatsDetail(null)} className="w-full mt-6 py-2 bg-gray-100 dark:bg-white/10 rounded-xl text-xs font-bold text-gray-500">关闭</button>
+                        </div>
+                    </div>
+                );
+            };
+            
+            if (showNotesList) { 
+                return (
+                    <div className="flex flex-col h-full bg-white dark:bg-black pt-safe-top">
+                        <div className="h-16 flex items-center justify-between px-4 border-b border-gray-100 dark:border-white/10">
+                            <div className="flex items-center">
+                                <button onClick={() => setShowNotesList(false)} className="p-2 -ml-2 text-gray-500"><Icon name="arrow-left" size={24}/></button>
+                                <h2 className="text-lg font-bold ml-2">我的笔记 ({stats.totalNotes})</h2>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button onClick={() => setSortMethod(prev => prev === 'time' ? 'book' : 'time')} className="p-2 bg-gray-100 dark:bg-white/10 rounded-full text-[10px] font-medium px-3">
+                                    {sortMethod === 'time' ? '按时间' : '按书名'}
+                                </button>
+                                <button onClick={() => { setIsNoteSelectionMode(!isNoteSelectionMode); setSelectedNoteIds(new Set()); }} className={`p-2 rounded-full text-[10px] font-medium px-3 ${isNoteSelectionMode ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-white/10'}`}>
+                                    {isNoteSelectionMode ? '完成' : '选择'}
+                                </button>
+                            </div>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-4 pb-20">
+                            {stats.allNotes.length === 0 ? 
+                                <div className="flex flex-col items-center justify-center h-64 text-gray-400"><Icon name="file-text" size={48} className="mb-4 opacity-30"/><p>暂无笔记</p></div> : 
+                                stats.allNotes.map((note, i) => (
+                                    <div key={i} className="flex items-start gap-3 mb-4">
+                                        {isNoteSelectionMode && (
+                                            <div onClick={() => toggleNoteSelection(note.id)} className={`mt-4 w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${selectedNoteIds.has(note.id) ? 'border-brand bg-brand text-white' : 'border-gray-300 dark:border-white/20'}`}>
+                                                {selectedNoteIds.has(note.id) && <Icon name="check" size={12} strokeWidth={4} />}
+                                            </div>
+                                        )}
+                                        <div className="flex-1 p-4 rounded-xl bg-gray-50 dark:bg-[#1c1c1e] border border-gray-100 dark:border-white/5">
+                                            {note.quote && (
+                                                <div className="mb-3 pl-3 border-l-2 border-brand/50 text-xs text-gray-500 dark:text-gray-400 italic line-clamp-3">
+                                                    {note.quote}
+                                                </div>
+                                            )}
+                                            <div className="text-sm text-gray-800 dark:text-gray-200 mb-2 leading-relaxed">{note.content}</div>
+                                            <div className="flex justify-between items-center text-[10px] text-gray-400 mt-2 pt-2 border-t border-gray-100 dark:border-white/5">
+                                                <span>《{note.bookTitle}》 {note.pageNo ? `第${note.pageNo}页` : ''}</span>
+                                                <span>{new Date(note.date).toLocaleString('zh-CN', {month:'numeric', day:'numeric', hour:'numeric', minute:'numeric'})}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))
+                            }
+                        </div>
+                        {isNoteSelectionMode && selectedNoteIds.size > 0 && (
+                            <div className="fixed bottom-0 w-full p-4 bg-white dark:bg-[#1c1c1e] border-t border-gray-100 dark:border-white/10 z-50 safe-bottom">
+                                <button onClick={handleDeleteNotes} className="w-full py-3 bg-red-500 text-white rounded-xl font-bold text-sm shadow-lg shadow-red-500/30">
+                                    删除 ({selectedNoteIds.size})
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                ); 
+            }
+            return (
+                <div className="p-6 pt-safe pb-24 overflow-y-auto h-full">
+                    <h1 className="text-3xl font-bold mb-6 pt-4">个人中心</h1>
+                    <div className="bg-gray-100 dark:bg-[#1c1c1e] text-black dark:text-gray-200 rounded-2xl p-6 mb-6 shadow-sm border border-gray-100 dark:border-white/5 relative overflow-hidden">
+                        <div className="flex items-center gap-4 mb-6 relative z-10">
+                            <div className="w-14 h-14 rounded-full bg-white/50 dark:bg-white/10 flex items-center justify-center text-2xl border border-black/5 dark:border-white/10 backdrop-blur-sm">🤠</div>
+                            <div><div className="font-bold text-lg">本地书友</div><div className="text-xs text-gray-500 dark:text-gray-400">坚持阅读，保持热爱</div></div>
+                        </div>
+                        <div className="flex justify-between text-center relative z-10">
+                            <div><div className="text-3xl font-bold font-mono">{stats.totalHours}<span className="text-sm font-normal opacity-60 ml-1">h</span> {stats.totalMins}<span className="text-sm font-normal opacity-60 ml-1">m</span></div><div className="text-xs opacity-40 mt-1">总阅读时长</div></div>
+                            <div className="w-px bg-gray-300 dark:bg-white/10"></div>
+                            <div><div className="text-3xl font-bold font-mono">{books.length}</div><div className="text-xs opacity-40 mt-1">藏书数量</div></div>
+                        </div>
+                    </div>
+                    
+                    <h2 className="text-sm font-bold text-gray-500 mb-3 px-1">阅读数据</h2>
+                    <div className="grid grid-cols-2 gap-4 mb-6">
+                        <div onClick={() => setStatsDetail('books')} className="bg-gray-100 dark:bg-[#1c1c1e] p-4 rounded-xl cursor-pointer hover:bg-gray-200 dark:hover:bg-white/10 transition-colors btn-press">
+                            <div className="text-2xl font-bold text-brand">{stats.monthBooks} <span className="text-xs text-gray-500 font-normal">本</span></div>
+                            <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">本月阅读 <Icon name="chevron-right" size={10}/></div>
+                        </div>
+                        <div onClick={() => setStatsDetail('time')} className="bg-gray-100 dark:bg-[#1c1c1e] p-4 rounded-xl cursor-pointer hover:bg-gray-200 dark:hover:bg-white/10 transition-colors btn-press">
+                            <div className="text-2xl font-bold text-brand">{stats.monthHours} <span className="text-xs text-gray-500 font-normal">小时</span></div>
+                            <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">阅读时间 <Icon name="chevron-right" size={10}/></div>
+                        </div>
+                    </div>
+                    
+                    <h2 className="text-sm font-bold text-gray-500 mb-3 px-1">更多功能</h2>
+                    <div className="space-y-3">
+                        <button onClick={() => setShowNotesList(true)} className="w-full p-4 bg-gray-100 dark:bg-[#1c1c1e] rounded-xl flex items-center justify-between btn-press">
+                            <div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-brand/10 text-brand flex items-center justify-center"><Icon name="file-text" size={16}/></div><span className="text-sm font-bold">我的笔记</span></div>
+                            <Icon name="chevron-right" size={16} className="text-gray-400"/>
+                        </button>
+                        <button className="w-full p-4 bg-gray-100 dark:bg-[#1c1c1e] rounded-xl text-left text-red-500 btn-press text-sm font-medium" onClick={() => { if(confirm('清空所有数据?')) { localStorage.clear(); window.location.reload(); } }}>清空所有数据</button>
+                    </div>
+                    {renderStatsDetailModal()}
+                </div>
+            );
+        };
+
+        // --- Bookshelf Component ---
+        const Bookshelf = ({ books, onImport, onOpen, onDelete, settings, setSettings, isDarkMode, sessionStartTime }) => {
+            const [isSelectionMode, setIsSelectionMode] = useState(false);
+            const [selectedIds, setSelectedIds] = useState(new Set());
+            const [activeTab, setActiveTab] = useState('default'); 
+            const [categoryType, setCategoryType] = useState('progress'); 
+            const [searchTerm, setSearchTerm] = useState('');
+
+            const sortedBooks = useMemo(() => {
+                let list = books.filter(b => {
+                    const matchTitle = b.title.toLowerCase().includes(searchTerm.toLowerCase());
+                    const matchAuthor = b.author && b.author.toLowerCase().includes(searchTerm.toLowerCase());
+                    return matchTitle || matchAuthor;
+                });
+                
+                if (activeTab === 'default') {
+                    return list.sort((a, b) => {
+                        const aTime = parseFloat(a.id);
+                        const bTime = parseFloat(b.id);
+                        const aIsNew = aTime > sessionStartTime;
+                        const bIsNew = bTime > sessionStartTime;
+
+                        if (aIsNew && !bIsNew) return -1;
+                        if (!aIsNew && bIsNew) return 1;
+                        if (aIsNew && bIsNew) return bTime - aTime;
+
+                        const readA = a.lastRead || 0;
+                        const readB = b.lastRead || 0;
+                        if (readA !== readB) return readB - readA;
+
+                        return bTime - aTime;
+                    });
+                } else {
+                    if (categoryType === 'progress') {
+                        return list.sort((a, b) => {
+                            const pa = a.content.length ? (a.progressIndex / a.content.length) : 0;
+                            const pb = b.content.length ? (b.progressIndex / b.content.length) : 0;
+                            return pb - pa;
+                        });
+                    }
+                    if (categoryType === 'author') {
+                        return list.sort((a, b) => (a.author || "").localeCompare(b.author || ""));
+                    }
+                    if (categoryType === 'import') {
+                        return list.sort((a, b) => b.id > a.id ? -1 : 1);
+                    }
+                }
+                return list;
+            }, [books, searchTerm, activeTab, categoryType, sessionStartTime]);
+            
+            const listBooks = sortedBooks;
+            const toggleSelect = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
+            const handleDelete = () => { if (confirm(`确定删除选中的 ${selectedIds.size} 本书?`)) { onDelete(selectedIds); setIsSelectionMode(false); setSelectedIds(new Set()); } };
+
+            const mostRecentReadBookId = useMemo(() => {
+                const oldBooks = books.filter(b => parseFloat(b.id) <= sessionStartTime);
+                const readBooks = oldBooks.filter(b => (b.lastRead || 0) > 0);
+                
+                if (readBooks.length === 0) return null;
+                readBooks.sort((a, b) => (b.lastRead || 0) - (a.lastRead || 0));
+                
+                return readBooks[0].id;
+            }, [books, sessionStartTime]);
+
+            return (
+                <div className="flex flex-col h-full bg-[#fcfcfc] dark:bg-black pt-safe-top pb-16 text-black dark:text-white" onClick={() => {}}>
+                    {/* Header */}
+                    <div className="px-4 pb-2 pt-4 bg-[#fcfcfc] dark:bg-black z-10">
+                        <div className="h-8 flex items-center justify-between mb-4">
+                            <span className="text-2xl font-bold tracking-wider">LiteReader <span className="text-sm font-normal opacity-80 ml-1">轻阅</span></span>
+                        </div>
+                        <div className="h-10 bg-gray-100 dark:bg-[#1c1c1e] rounded-xl flex items-center px-3 gap-2 transition-all focus-within:ring-1 focus-within:ring-brand/50">
+                            <Icon name="search" size={18} className="text-gray-400" />
+                            <input type="text" placeholder="搜索书名或作者..." className="bg-transparent border-none outline-none text-sm w-full text-gray-700 dark:text-gray-200 placeholder-gray-400" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                            {searchTerm && <button onClick={() => setSearchTerm('')} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><Icon name="x-circle" size={16} fill="currentColor" className="opacity-50"/></button>}
+                        </div>
+                    </div>
+                    
+                    <div className="px-4 flex items-center gap-6 mb-2 border-b border-gray-100 dark:border-white/5">
+                        <button onClick={() => setActiveTab('default')} className={`pb-2 text-sm font-bold transition-all relative ${activeTab === 'default' ? 'text-brand' : 'text-gray-400'}`}>默认 {activeTab === 'default' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-brand rounded-full"></div>}</button>
+                        <button onClick={() => setActiveTab('category')} className={`pb-2 text-sm font-bold transition-all relative ${activeTab === 'category' ? 'text-brand' : 'text-gray-400'}`}>分类 {activeTab === 'category' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-brand rounded-full"></div>}</button>
+                        <div className="flex-1 flex justify-end pb-2">{isSelectionMode ? <button onClick={() => setIsSelectionMode(false)} className="text-xs font-medium text-gray-500 bg-gray-100 dark:bg-white/10 px-3 py-1 rounded-full">取消</button> : <div className="flex gap-2"><label className="flex items-center gap-1 text-xs font-medium cursor-pointer btn-press text-brand bg-brand/10 px-3 py-1 rounded-full"><Icon name="plus" size={14} /> 导入<input type="file" multiple className="hidden" onChange={onImport} accept=".txt,.pdf,.docx" /></label><button onClick={() => setIsSelectionMode(true)} className="flex items-center gap-1 text-xs font-medium btn-press text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-white/10 px-3 py-1 rounded-full"><Icon name="check" size={14} /> 选择</button></div>}</div>
+                    </div>
+                    {activeTab === 'category' && (<div className="px-4 flex gap-2 mb-3 overflow-x-auto no-scrollbar">{['progress', 'author', 'import'].map(type => (<button key={type} onClick={() => setCategoryType(type)} className={`px-3 py-1 text-[10px] rounded-full transition-colors ${categoryType === type ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-white/10 text-gray-500'}`}>{type === 'progress' ? '按进度' : type === 'author' ? '按作者' : '按导入'}</button>))}</div>)}
+                    
+                    {isSelectionMode && <div className="px-4 mb-3 flex justify-between items-center bg-red-50 dark:bg-red-900/20 p-3 rounded-xl"><span className="text-sm text-red-500">已选 {selectedIds.size} 本</span><button onClick={handleDelete} className="text-sm font-bold text-white bg-red-500 px-4 py-1.5 rounded-full shadow-md shadow-red-500/30">删除</button></div>}
+                    <div className="flex-1 overflow-y-auto px-4 pb-4">
+                        <div className="grid grid-cols-3 gap-x-4 gap-y-6">
+                            {listBooks.map((book) => {
+                                const progress = Math.round((book.progressIndex / Math.max(1, book.content.length)) * 100);
+                                const displayProgress = (book.lastRead > 0 && progress === 0) ? 1 : progress;
+                                
+                                const isMostRecentRead = (book.id === mostRecentReadBookId);
+
+                                return (
+                                <div key={book.id} onClick={() => isSelectionMode ? toggleSelect(book.id) : onOpen(book.id)} className={`flex flex-col gap-2 cursor-pointer btn-press relative`}>
+                                    <div className={`w-full aspect-[3/4] rounded-[4px] shadow-md relative overflow-hidden ${getBookCoverStyle(book.title)}`}>
+                                        <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-r from-black/20 to-transparent"></div>
+                                        <div className="absolute bottom-1 left-1 text-white/80"><Icon name="book" size={12} fill="currentColor"/></div>
+                                        <div className="p-2 h-full flex items-center justify-center text-center"><span className="text-xs font-bold text-white/90 line-clamp-3 leading-tight drop-shadow-sm">{book.title}</span></div>
+                                        {/* Recently Read Label: Inside cover, bottom-right */}
+                                        {isMostRecentRead && (
+                                            <div className="absolute bottom-1 right-1 text-[8px] text-white/90 bg-black/20 backdrop-blur-[2px] px-1 rounded-sm z-10">
+                                                最近阅读
+                                            </div>
+                                        )}
+                                        {isSelectionMode && <div className={`absolute inset-0 bg-black/40 flex items-center justify-center ${selectedIds.has(book.id) ? 'opacity-100' : 'opacity-0'} z-20`}><div className="bg-brand rounded-full p-1 text-white"><Icon name="check" size={16} strokeWidth={4} /></div></div>}
+                                        {isSelectionMode && !selectedIds.has(book.id) && <div className="absolute top-2 right-2 w-5 h-5 rounded-full border-2 border-white/80 z-20"></div>}
+                                    </div>
+                                    <div className="w-full"><div className="flex items-center gap-1 mb-1">{isSelectionMode ? null : <Icon name="check-circle" size={10} className="text-gray-400 fill-gray-400 flex-shrink-0" />}<div className="text-[11px] text-gray-800 dark:text-gray-300 truncate font-medium">{book.title}</div>
+                                    </div>
+                                    <div className="flex items-center justify-between"><span className="text-[9px] text-gray-500 truncate max-w-[60%]">{book.author || '未分类'}</span><span className={`text-[9px] font-mono ${displayProgress > 0 ? 'text-brand font-bold' : 'text-gray-400'}`}>{displayProgress}%</span></div></div>
+                                </div>
+                            )})}
+                            <label className="flex flex-col gap-2 cursor-pointer btn-press"><div className="w-full aspect-[3/4] bg-gray-100 dark:bg-[#1c1c1e] rounded-[4px] flex items-center justify-center text-gray-400 dark:text-gray-600 border-2 border-dashed border-gray-300 dark:border-white/10"><Icon name="plus" size={32} /></div><div className="text-[11px] text-center text-gray-400">导入书籍</div><input type="file" multiple className="hidden" onChange={onImport} accept=".txt,.pdf,.docx" /></label>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- App Component (Defined Last) ---
         const App = () => {
             const [view, setView] = useState('shelf');
             const [books, setBooks] = useState(() => {
@@ -214,6 +1266,8 @@
             });
             const [currentBookId, setCurrentBookId] = useState(null);
             const [readerAutoPlay, setReaderAutoPlay] = useState(false); 
+            // 记录 Session 开始时间
+            const [sessionStartTime] = useState(Date.now());
             
             const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -222,9 +1276,7 @@
                     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
                     return {
                         theme: 'system', fontSize: 18, speechRate: 1.0, 
-                        linesPerPage: 18, // 改为行数控制，默认18行
-                        lineHeight: 1.8, pageMargin: 30, 
-                        indent: false, 
+                        linesPerPage: 18, lineHeight: 1.8, pageMargin: 30, indent: false, 
                         fontFamily: 'sans', voiceURI: null, brightness: 100, ...saved
                     }; 
                 } catch { 
@@ -244,11 +1296,68 @@
                 else if (isDarkMode) root.classList.add('dark');
                 else root.classList.add('light');
                 
-                if (isPaperMode) { document.body.style.backgroundColor = '#f6f3e8'; document.body.style.color = '#3b3830'; }
-                else if (isSepiaMode) { document.body.style.backgroundColor = '#f6ecd5'; document.body.style.color = '#5b4636'; }
-                else if (isDarkMode) { document.body.style.backgroundColor = '#000000'; document.body.style.color = '#e5e5e7'; }
-                else { document.body.style.backgroundColor = '#ffffff'; document.body.style.color = '#1f2937'; }
-            }, [settings.theme, systemPrefersDark, isDarkMode, isPaperMode, isSepiaMode]);
+                let bgColor, textColor, metaColor;
+                
+                if (isPaperMode) { 
+                    bgColor = '#f6f3e8'; 
+                    textColor = '#3b3830';
+                    metaColor = '#f6f3e8';
+                } else if (isSepiaMode) { 
+                    bgColor = '#f6ecd5'; 
+                    textColor = '#5b4636';
+                    metaColor = '#f6ecd5';
+                } else if (isDarkMode) { 
+                    bgColor = '#000000'; 
+                    textColor = '#e5e5e7';
+                    // 深色模式下，阅读器页面使用#121212，其他页面使用#000000
+                    metaColor = view === 'reader' ? '#121212' : '#000000';
+                } else { 
+                    // 浅色模式下，根据视图设置不同的背景色
+                    if (view === 'reader') {
+                        bgColor = '#ffffff';
+                        metaColor = '#ffffff';
+                    } else {
+                        // 书架和我页面：使用与fcfcfc一致的背景色
+                        bgColor = '#fcfcfc';
+                        metaColor = '#fcfcfc';
+                    }
+                    textColor = '#1f2937';
+                }
+                
+                // 设置body背景色和文字颜色
+                document.body.style.backgroundColor = bgColor;
+                document.body.style.color = textColor;
+
+                // --- 状态栏颜色同步逻辑 ---
+                // 强制更新多个可能影响状态栏的标签
+                
+                // 1. 更新主要的theme-color标签
+                let metaTag = document.querySelector('meta[name="theme-color"]');
+                if (!metaTag) {
+                    metaTag = document.createElement('meta');
+                    metaTag.name = 'theme-color';
+                    document.head.appendChild(metaTag);
+                }
+                metaTag.setAttribute('content', metaColor);
+                
+                // 2. 同时更新iOS的状态栏颜色标签
+                let appleMetaTag = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+                if (appleMetaTag) {
+                    // iOS状态栏样式：dark-content或light-content
+                    if (isDarkMode) {
+                        appleMetaTag.setAttribute('content', 'light-content');
+                    } else {
+                        appleMetaTag.setAttribute('content', 'dark-content');
+                    }
+                }
+                
+                // 3. 确保没有其他theme-color标签覆盖设置
+                const allThemeColorTags = document.querySelectorAll('meta[name="theme-color"]');
+                allThemeColorTags.forEach(tag => {
+                    tag.setAttribute('content', metaColor);
+                });
+
+            }, [settings.theme, systemPrefersDark, isDarkMode, isPaperMode, isSepiaMode, view]);
 
             useEffect(() => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)), [settings]);
             useEffect(() => localStorage.setItem(DB_KEY, JSON.stringify(books)), [books]);
@@ -278,7 +1387,7 @@
                         const parsed = await parseFile(file);
                         const meta = extractMeta(file.name, parsed.content);
                         const newBook = {
-                            id: Date.now() + Math.random().toString(),
+                            id: Date.now() + Math.random().toString(), 
                             title: meta.title, author: meta.author, totalChars: meta.totalChars,
                             content: parsed.content, chapters: detectChapters(parsed.content), type: parsed.type,
                             progressIndex: 0, lastRead: 0, totalTime: 0, readingLogs: {}
@@ -286,7 +1395,7 @@
                         setBooks(prev => {
                             const exists = prev.some(b => b.title === newBook.title && b.content.length === newBook.content.length);
                             if (exists) return prev;
-                            return [newBook, ...prev];
+                            return [newBook, ...prev]; 
                         });
                     } catch (err) { console.error(err); }
                 }
@@ -314,17 +1423,18 @@
                     if(!activeBook) { setTimeout(() => changeView('shelf'), 0); return null; }
                     return <Reader 
                         book={activeBook} settings={settings} setSettings={setSettings}
-                        onBack={() => window.history.back()} 
+                        onBack={() => changeView('shelf')} 
                         isDarkMode={isDarkMode} isPaperMode={isPaperMode} isSepiaMode={settings.theme === 'sepia'}
                         updateProgress={handleUpdateProgress}
                         autoPlayOnMount={readerAutoPlay} 
                     />;
                 }
                 if (view === 'me') {
-                    return <MePage settings={settings} setSettings={setSettings} books={books} />;
+                    return <MePage settings={settings} setSettings={setSettings} books={books} setBooks={setBooks} />;
                 }
                 return <Bookshelf 
                     books={books} onImport={handleImport} 
+                    sessionStartTime={sessionStartTime}
                     onOpen={(id, autoPlay = false) => { 
                         handleUpdateProgress(id, { lastRead: Date.now() });
                         setCurrentBookId(id); 
@@ -350,389 +1460,6 @@
                             </button>
                         </div>
                     )}
-                </div>
-            );
-        };
-
-        // --- Me Page ---
-        const MePage = ({ settings, setSettings, books }) => {
-            const [showNotesList, setShowNotesList] = useState(false);
-            const stats = useMemo(() => {
-                let totalDuration = 0; let finishedCount = 0; let readingCount = 0; let monthDuration = 0; let totalNotes = 0;
-                const currentMonthPrefix = new Date().toISOString().slice(0, 7); 
-                const booksReadThisMonth = new Set();
-                const allNotes = [];
-                books.forEach(b => {
-                    totalDuration += (b.totalTime || 0);
-                    const progress = b.content.length > 0 ? (b.progressIndex / b.content.length) : 0;
-                    if (progress > 0.99) finishedCount++; else if (progress > 0) readingCount++;
-                    if (b.readingLogs) { Object.entries(b.readingLogs).forEach(([date, time]) => { if (date.startsWith(currentMonthPrefix)) { monthDuration += time; booksReadThisMonth.add(b.id); } }); }
-                    if (b.notes && b.notes.length > 0) { totalNotes += b.notes.length; b.notes.forEach(note => allNotes.push({...note, bookTitle: b.title})); }
-                });
-                allNotes.sort((a, b) => b.date - a.date);
-                return { totalHours: Math.floor(totalDuration / 60), totalMins: totalDuration % 60, finished: finishedCount, reading: readingCount, monthBooks: booksReadThisMonth.size, monthHours: (monthDuration / 60).toFixed(1), totalNotes, allNotes };
-            }, [books]);
-            if (showNotesList) { return <div className="flex flex-col h-full bg-white dark:bg-black safe-top"><div className="h-16 flex items-center px-4 border-b border-gray-100 dark:border-white/10"><button onClick={() => setShowNotesList(false)} className="p-2 -ml-2 text-gray-500"><Icon name="arrow-left" size={24}/></button><h2 className="text-lg font-bold ml-2">我的笔记 ({stats.totalNotes})</h2></div><div className="flex-1 overflow-y-auto p-4 pb-20">{stats.allNotes.length === 0 ? <div className="flex flex-col items-center justify-center h-64 text-gray-400"><Icon name="file-text" size={48} className="mb-4 opacity-30"/><p>暂无笔记</p></div> : stats.allNotes.map((note, i) => <div key={i} className="mb-4 p-4 rounded-xl bg-gray-50 dark:bg-[#1c1c1e] border border-gray-100 dark:border-white/5"><div className="text-sm text-gray-800 dark:text-gray-200 mb-2 leading-relaxed">{note.content}</div><div className="flex justify-between items-center text-[10px] text-gray-400"><span>《{note.bookTitle}》</span><span>{new Date(note.date).toLocaleDateString()}</span></div></div>)}</div></div>; }
-            return (
-                <div className="p-6 pt-12 safe-top pb-24 overflow-y-auto h-full">
-                    <h1 className="text-3xl font-bold mb-6">个人中心</h1>
-                    <div className="bg-brand text-white rounded-2xl p-6 mb-6 shadow-lg shadow-brand/30"><div className="flex items-center gap-4 mb-6"><div className="w-14 h-14 rounded-full bg-white/20 flex items-center justify-center text-2xl border border-white/30">🤠</div><div><div className="font-bold text-lg">本地书友</div><div className="text-xs text-white/80 opacity-80">坚持阅读，保持热爱</div></div></div><div className="flex justify-between text-center"><div><div className="text-3xl font-bold">{stats.totalHours}<span className="text-sm font-normal opacity-80">h</span> {stats.totalMins}<span className="text-sm font-normal opacity-80">m</span></div><div className="text-xs opacity-60 mt-1">总阅读时长</div></div><div className="w-px bg-white/20"></div><div><div className="text-3xl font-bold">{books.length}</div><div className="text-xs opacity-60 mt-1">藏书数量</div></div></div></div>
-                    <h2 className="text-sm font-bold text-gray-500 mb-3 px-1">阅读数据</h2>
-                    <div className="grid grid-cols-2 gap-4 mb-6"><div className="bg-gray-100 dark:bg-[#1c1c1e] p-4 rounded-xl"><div className="text-2xl font-bold text-brand">{stats.monthBooks} <span className="text-xs text-gray-500 font-normal">本</span></div><div className="text-xs text-gray-500 mt-1">本月阅读</div></div><div className="bg-gray-100 dark:bg-[#1c1c1e] p-4 rounded-xl"><div className="text-2xl font-bold text-brand">{stats.monthHours} <span className="text-xs text-gray-500 font-normal">小时</span></div><div className="text-xs text-gray-500 mt-1">阅读时间</div></div></div>
-                    <h2 className="text-sm font-bold text-gray-500 mb-3 px-1">更多功能</h2>
-                    <div className="space-y-3"><button onClick={() => setShowNotesList(true)} className="w-full p-4 bg-gray-100 dark:bg-[#1c1c1e] rounded-xl flex items-center justify-between btn-press"><div className="flex items-center gap-3"><div className="w-8 h-8 rounded-full bg-brand/10 text-brand flex items-center justify-center"><Icon name="file-text" size={16}/></div><span className="text-sm font-bold">我的笔记</span></div><Icon name="chevron-right" size={16} className="text-gray-400"/></button><button className="w-full p-4 bg-gray-100 dark:bg-[#1c1c1e] rounded-xl text-left text-red-500 btn-press text-sm font-medium" onClick={() => { if(confirm('清空所有数据?')) { localStorage.clear(); window.location.reload(); } }}>清空所有数据</button></div>
-                </div>
-            );
-        };
-
-        // --- Bookshelf ---
-        const Bookshelf = ({ books, onImport, onOpen, onDelete, settings, setSettings, isDarkMode }) => {
-            const [isSelectionMode, setIsSelectionMode] = useState(false);
-            const [selectedIds, setSelectedIds] = useState(new Set());
-            const [activeTab, setActiveTab] = useState('default'); 
-            const [categoryType, setCategoryType] = useState('progress'); 
-            const [searchTerm, setSearchTerm] = useState('');
-
-            const sortedBooks = useMemo(() => {
-                let list = books.filter(b => {
-                    const matchTitle = b.title.toLowerCase().includes(searchTerm.toLowerCase());
-                    const matchAuthor = b.author && b.author.toLowerCase().includes(searchTerm.toLowerCase());
-                    return matchTitle || matchAuthor;
-                });
-                
-                if (activeTab === 'default') {
-                    return list.sort((a, b) => (a.lastRead === b.lastRead ? (b.id > a.id ? 1 : -1) : b.lastRead - a.lastRead));
-                } else {
-                    if (categoryType === 'progress') {
-                        return list.sort((a, b) => {
-                            const pa = a.content.length ? (a.progressIndex / a.content.length) : 0;
-                            const pb = b.content.length ? (b.progressIndex / b.content.length) : 0;
-                            return pb - pa;
-                        });
-                    }
-                    if (categoryType === 'author') {
-                        return list.sort((a, b) => (a.author || "").localeCompare(b.author || ""));
-                    }
-                    if (categoryType === 'import') {
-                        return list.sort((a, b) => b.id > a.id ? -1 : 1);
-                    }
-                }
-                return list;
-            }, [books, searchTerm, activeTab, categoryType]);
-
-            const recentBook = useMemo(() => {
-                if (activeTab !== 'default') return null; 
-                const read = books.filter(b => b.lastRead > 0);
-                if (read.length === 0) return null;
-                return read.sort((a, b) => b.lastRead - a.lastRead)[0];
-            }, [books, activeTab]);
-            
-            const listBooks = sortedBooks;
-            const toggleSelect = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) newSet.delete(id); else newSet.add(id); setSelectedIds(newSet); };
-            const handleDelete = () => { if (confirm(`确定删除选中的 ${selectedIds.size} 本书?`)) { onDelete(selectedIds); setIsSelectionMode(false); setSelectedIds(new Set()); } };
-
-            return (
-                <div className="flex flex-col h-full bg-[#fcfcfc] dark:bg-black safe-top pb-16 text-black dark:text-white" onClick={() => {}}>
-                    {/* Header - 回归 LiteReader 轻阅 */}
-                    <div className="pt-[calc(env(safe-area-inset-top)+1rem)] px-4 pb-2 bg-[#fcfcfc] dark:bg-black z-10">
-                        <div className="h-8 flex items-center justify-between mb-4">
-                            <span className="text-2xl font-bold tracking-wider">LiteReader 轻阅</span>
-                        </div>
-                        <div className="h-10 bg-gray-100 dark:bg-[#1c1c1e] rounded-xl flex items-center px-3 gap-2 transition-all focus-within:ring-1 focus-within:ring-brand/50">
-                            <Icon name="search" size={18} className="text-gray-400" />
-                            <input type="text" placeholder="搜索书名或作者..." className="bg-transparent border-none outline-none text-sm w-full text-gray-700 dark:text-gray-200 placeholder-gray-400" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-                            {searchTerm && <button onClick={() => setSearchTerm('')} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><Icon name="x-circle" size={16} fill="currentColor" className="opacity-50"/></button>}
-                        </div>
-                    </div>
-                    
-                    <div className="px-4 flex items-center gap-6 mb-2 border-b border-gray-100 dark:border-white/5">
-                        <button onClick={() => setActiveTab('default')} className={`pb-2 text-sm font-bold transition-all relative ${activeTab === 'default' ? 'text-brand' : 'text-gray-400'}`}>默认 {activeTab === 'default' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-brand rounded-full"></div>}</button>
-                        <button onClick={() => setActiveTab('category')} className={`pb-2 text-sm font-bold transition-all relative ${activeTab === 'category' ? 'text-brand' : 'text-gray-400'}`}>分类 {activeTab === 'category' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-brand rounded-full"></div>}</button>
-                        <div className="flex-1 flex justify-end pb-2">{isSelectionMode ? <button onClick={() => setIsSelectionMode(false)} className="text-xs font-medium text-gray-500 bg-gray-100 dark:bg-white/10 px-3 py-1 rounded-full">取消</button> : <div className="flex gap-2"><label className="flex items-center gap-1 text-xs font-medium cursor-pointer btn-press text-brand bg-brand/10 px-3 py-1 rounded-full"><Icon name="plus" size={14} /> 导入<input type="file" multiple className="hidden" onChange={onImport} accept=".txt,.pdf,.docx" /></label><button onClick={() => setIsSelectionMode(true)} className="flex items-center gap-1 text-xs font-medium btn-press text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-white/10 px-3 py-1 rounded-full"><Icon name="check" size={14} /> 选择</button></div>}</div>
-                    </div>
-                    {activeTab === 'category' && (<div className="px-4 flex gap-2 mb-3 overflow-x-auto no-scrollbar">{['progress', 'author', 'import'].map(type => (<button key={type} onClick={() => setCategoryType(type)} className={`px-3 py-1 text-[10px] rounded-full transition-colors ${categoryType === type ? 'bg-brand text-white' : 'bg-gray-100 dark:bg-white/10 text-gray-500'}`}>{type === 'progress' ? '按进度' : type === 'author' ? '按作者' : '按导入'}</button>))}</div>)}
-                    
-                    {isSelectionMode && <div className="px-4 mb-3 flex justify-between items-center bg-red-50 dark:bg-red-900/20 p-3 rounded-xl"><span className="text-sm text-red-500">已选 {selectedIds.size} 本</span><button onClick={handleDelete} className="text-sm font-bold text-white bg-red-500 px-4 py-1.5 rounded-full shadow-md shadow-red-500/30">删除</button></div>}
-                    <div className="flex-1 overflow-y-auto px-4 pb-4">
-                        <div className="grid grid-cols-3 gap-x-4 gap-y-6">
-                            {recentBook && !isSelectionMode && !searchTerm && (
-                                <div onClick={() => onOpen(recentBook.id)} className="col-span-3 mb-2 relative group cursor-pointer btn-press">
-                                    <div className="absolute inset-0 bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl blur opacity-20"></div>
-                                    <div className="relative bg-white dark:bg-[#1e1e1e] border border-gray-100 dark:border-white/5 p-5 rounded-2xl flex gap-4 items-center shadow-sm">
-                                        <div className={`w-16 h-20 rounded-lg shadow-lg flex items-center justify-center ${getBookCoverStyle(recentBook.title)}`}><span className="text-xs font-bold text-white/90">{recentBook.type}</span></div>
-                                        <div className="flex-1"><div className="text-xs text-brand mb-1">最近阅读</div><h3 className="font-bold text-lg leading-tight mb-2 line-clamp-1">{recentBook.title}</h3><div className="text-xs text-gray-400 mt-1">{(() => { const p = Math.round((recentBook.progressIndex / Math.max(1, recentBook.content.length)) * 100); return (recentBook.lastRead > 0 && p === 0) ? 1 : p; })()}%</div></div>
-                                    </div>
-                                </div>
-                            )}
-                            {listBooks.map(book => {
-                                const progress = Math.round((book.progressIndex / Math.max(1, book.content.length)) * 100);
-                                const displayProgress = (book.lastRead > 0 && progress === 0) ? 1 : progress;
-                                return (
-                                <div key={book.id} onClick={() => isSelectionMode ? toggleSelect(book.id) : onOpen(book.id)} className={`flex flex-col gap-2 cursor-pointer btn-press relative`}>
-                                    <div className={`w-full aspect-[3/4] rounded-[4px] shadow-md relative overflow-hidden ${getBookCoverStyle(book.title)}`}>
-                                        <div className="absolute inset-y-0 left-0 w-1 bg-gradient-to-r from-black/20 to-transparent"></div>
-                                        <div className="absolute bottom-1 left-1 text-white/80"><Icon name="book" size={12} fill="currentColor"/></div>
-                                        <div className="p-2 h-full flex items-center justify-center text-center"><span className="text-xs font-bold text-white/90 line-clamp-3 leading-tight drop-shadow-sm">{book.title}</span></div>
-                                        {isSelectionMode && <div className={`absolute inset-0 bg-black/40 flex items-center justify-center ${selectedIds.has(book.id) ? 'opacity-100' : 'opacity-0'}`}><div className="bg-brand rounded-full p-1 text-white"><Icon name="check" size={16} strokeWidth={4} /></div></div>}
-                                        {isSelectionMode && !selectedIds.has(book.id) && <div className="absolute top-2 right-2 w-5 h-5 rounded-full border-2 border-white/80"></div>}
-                                    </div>
-                                    <div className="w-full"><div className="flex items-center gap-1 mb-1">{isSelectionMode ? null : <Icon name="check-circle" size={10} className="text-gray-400 fill-gray-400 flex-shrink-0" />}<div className="text-[11px] text-gray-800 dark:text-gray-300 truncate font-medium">{book.title}</div></div><div className="flex items-center justify-between"><span className="text-[9px] text-gray-500 truncate max-w-[60%]">{book.author || '未分类'}</span><span className={`text-[9px] font-mono ${displayProgress > 0 ? 'text-brand font-bold' : 'text-gray-400'}`}>{displayProgress}%</span></div></div>
-                                </div>
-                            )})}
-                            <label className="flex flex-col gap-2 cursor-pointer btn-press"><div className="w-full aspect-[3/4] bg-gray-100 dark:bg-[#1c1c1e] rounded-[4px] flex items-center justify-center text-gray-400 dark:text-gray-600 border-2 border-dashed border-gray-300 dark:border-white/10"><Icon name="plus" size={32} /></div><div className="text-[11px] text-center text-gray-400">导入书籍</div><input type="file" multiple className="hidden" onChange={onImport} accept=".txt,.pdf,.docx" /></label>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-
-        // --- Reader ---
-        const Reader = ({ book, settings, setSettings, onBack, updateProgress, isDarkMode, isPaperMode, isSepiaMode, autoPlayOnMount }) => {
-            const [showMenu, setShowMenu] = useState(false);
-            const [showNoteInput, setShowNoteInput] = useState(false); 
-            const [noteText, setNoteText] = useState('');
-            const [activeTab, setActiveTab] = useState('progress'); 
-            const [timerMinutes, setTimerMinutes] = useState(null); 
-            const [countdown, setCountdown] = useState(null); 
-            const [toastMsg, setToastMsg] = useState(null);
-            const [availableVoices, setAvailableVoices] = useState([]); 
-            const [readingCharIndex, setReadingCharIndex] = useState(0); 
-            const [customTimerInput, setCustomTimerInput] = useState(false); 
-            const [customMinutes, setCustomMinutes] = useState('');
-            
-            const [currentPage, setCurrentPage] = useState(0);
-            const [ttsState, setTtsState] = useState('stopped');
-            const [startTime] = useState(Date.now());
-            
-            const synth = window.speechSynthesis;
-            const contentRef = useRef(null);
-            const ttsRef = useRef(null);
-            const ttsStateRef = useRef(ttsState);
-            const settingsRef = useRef(settings);
-            const heartbeatRef = useRef(null);
-            const timerRef = useRef(null); 
-
-            // 文字样式
-            const textStyle = useMemo(() => {
-                let color = isDarkMode ? '#e5e5e7' : '#1f2937';
-                if (isPaperMode) color = '#3b3830';
-                if (isSepiaMode) color = '#5b4636';
-                
-                return { 
-                    fontSize: `${settings.fontSize}px`, 
-                    lineHeight: settings.lineHeight, 
-                    textIndent: 0, 
-                    fontFamily: settings.fontFamily === 'serif' ? '"Noto Serif SC", serif' : '"Noto Sans SC", sans-serif', 
-                    color: color 
-                };
-            }, [settings, isDarkMode, isPaperMode, isSepiaMode]);
-
-            // 容器样式
-            const contentStyle = {
-                paddingTop: `max(50px, env(safe-area-inset-top))`,
-                paddingBottom: `100px`,
-                paddingLeft: `${settings.pageMargin}px`,
-                paddingRight: `${settings.pageMargin}px`,
-                height: '100vh',
-                boxSizing: 'border-box'
-            };
-
-            const splitSentences = (text) => {
-                const sentences = []; let current = ''; let startIndex = 0;
-                for (let i = 0; i < text.length; i++) { const char = text[i]; current += char; if (/[.!?。！？\n]/.test(char) || i === text.length - 1) { sentences.push({ text: current, start: startIndex, end: startIndex + current.length }); startIndex += current.length; current = ''; } }
-                return sentences;
-            };
-            const chapters = useMemo(() => { if (book.chapters && book.chapters.length > 0) return book.chapters; return detectChapters(book.content); }, [book]);
-            useEffect(() => { ttsStateRef.current = ttsState; }, [ttsState]);
-            useEffect(() => { settingsRef.current = settings; }, [settings]);
-            useEffect(() => { if(!synth) return; const load = () => setAvailableVoices(synth.getVoices().filter(v => v.lang.includes('zh') || v.lang.includes('cmn') || v.name.includes('Chinese'))); load(); if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = load; }, []);
-            
-            // *** 核心：流式分页引擎 (行数优先) ***
-            const pages = useMemo(() => {
-                const containerWidth = window.innerWidth - (settings.pageMargin * 2); 
-                // 计算每行字数 (向下取整)
-                const charsPerLine = Math.floor(containerWidth / settings.fontSize);
-                // 单页容量 = 每行字数 * 设定行数
-                const capacity = charsPerLine * settings.linesPerPage;
-
-                const result = []; let page = []; let curChars = 0;
-                const chapterIndices = new Set(book.chapters ? book.chapters.map(c => c.index) : []);
-                book.content.forEach((txt, idx) => {
-                    const text = txt.replace(/^\s+/, ''); if (text.length === 0) return; 
-                    
-                    const isChapterStart = chapterIndices.has(idx);
-                    if (isChapterStart && page.length > 0) { result.push(page); page = []; curChars = 0; }
-
-                    let remainingText = text;
-                    while (remainingText.length > 0) {
-                        const spaceLeft = capacity - curChars;
-                        
-                        if (remainingText.length <= spaceLeft) {
-                            // 全部放入
-                            page.push({ text: remainingText, index: idx, split: false });
-                            curChars += remainingText.length;
-                            remainingText = "";
-                        } else {
-                            // 放不下，切分填满
-                            // 严格按字数切分，配合 CSS justify-last-line 实现对齐
-                            let cutIdx = spaceLeft;
-                            const chunk = remainingText.substring(0, cutIdx);
-                            page.push({ text: chunk, index: idx, split: true });
-                            
-                            result.push(page);
-                            page = []; curChars = 0;
-                            remainingText = remainingText.substring(cutIdx);
-                        }
-                        
-                        // 满页
-                        if (curChars >= capacity) {
-                            result.push(page);
-                            page = []; curChars = 0;
-                        }
-                    }
-                });
-                if (page.length > 0) result.push(page);
-                return result;
-            }, [book.content, settings.linesPerPage, settings.pageMargin, settings.fontSize, chapters]);
-
-            const totalPages = Math.max(1, pages.length);
-            const currentChapterNum = useMemo(() => { if (pages.length === 0 || !pages[currentPage] || pages[currentPage].length === 0) return ""; const firstParaIdx = pages[currentPage][0].index; let chapterIndex = -1; for (let i = 0; i < (book.chapters||[]).length; i++) { if (book.chapters[i].index <= firstParaIdx) { chapterIndex = i; } else { break; } } if (chapterIndex !== -1) return `第${toChineseNum(chapterIndex + 1)}章`; return ""; }, [currentPage, pages, book.chapters]);
-
-            useEffect(() => { const p = pages.findIndex(pg => pg.some(item => item.index === (book.progressIndex || 0))); setCurrentPage(p >= 0 ? p : 0); }, []);
-            useEffect(() => { if (autoPlayOnMount) setTimeout(() => toggleTTS(), 500); }, []);
-            useEffect(() => { const timer = setInterval(() => { updateProgress(book.id, { addTime: 1 }); }, 60000); return () => { clearInterval(timer); if (synth) synth.cancel(); }; }, []);
-            useEffect(() => {
-                if (timerMinutes) { setCountdown(timerMinutes * 60); if (timerRef.current) clearInterval(timerRef.current); timerRef.current = setInterval(() => { setCountdown(prev => { if (prev <= 1) { clearInterval(timerRef.current); setTimerMinutes(null); if (ttsStateRef.current === 'playing') { stopTTS(); setToastMsg("定时结束，已停止朗读"); setTimeout(()=>setToastMsg(null), 3000); } return 0; } return prev - 1; }); }, 1000); } 
-                else { if (timerRef.current) clearInterval(timerRef.current); setCountdown(null); }
-                return () => { if (timerRef.current) clearInterval(timerRef.current); };
-            }, [timerMinutes]);
-
-            const speak = (idx) => {
-                if (ttsStateRef.current !== 'playing') return; 
-                if (idx >= book.content.length) { setTtsState('stopped'); return; }
-                
-                const pIdx = pages.findIndex(pg => pg.some(i => i.index === idx));
-                if (pIdx !== -1 && pIdx !== currentPage) { 
-                    setCurrentPage(pIdx); 
-                    if(contentRef.current) contentRef.current.scrollTop = 0; 
-                }
-                updateProgress(book.id, { progressIndex: idx });
-
-                // Modified logic here [cite: 1, 2]
-                if (window.AndroidTTS) {
-                    // Use Android Interface
-                    window.AndroidTTS.speak(book.content[idx]);
-                    // Note: Without a callback from Android, auto-playing the next paragraph is difficult here. 
-                } else if (synth) {
-                     // Original Web Speech API logic
-                    const u = new SpeechSynthesisUtterance(book.content[idx]); window.currentUtterance = u;
-                    const curSettings = settingsRef.current; u.rate = curSettings.speechRate;
-                    if (settingsRef.current.voiceURI) { const v = synth.getVoices().find(x => x.voiceURI === settingsRef.current.voiceURI); if(v) u.voice = v; }
-                    u.onboundary = (event) => { if (event.name === 'sentence' || event.name === 'word') setReadingCharIndex(event.charIndex); };
-                    u.onend = () => { if (ttsStateRef.current === 'playing') { setReadingCharIndex(0); speak(idx + 1); } };
-                    u.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') { if(ttsStateRef.current === 'playing') setTimeout(() => speak(idx+1), 100); } };
-                    ttsRef.current = u; synth.speak(u);
-                }
-            };
-            
-            const stopTTS = () => { 
-                // [cite: 4, 5]
-                if (window.AndroidTTS) {
-                    window.AndroidTTS.stop();
-                }
-                if (synth) synth.cancel(); 
-                setTtsState('stopped'); 
-                if (heartbeatRef.current) clearInterval(heartbeatRef.current); 
-            };
-
-            const toggleTTS = () => { 
-                if (ttsState === 'playing') { 
-                    stopTTS();
-                } else { 
-                    if (window.AndroidTTS) window.AndroidTTS.stop();
-                    if (synth) synth.cancel();
-                    
-                    setTtsState('playing'); 
-                    ttsStateRef.current = 'playing'; 
-                    const currentP = pages[currentPage]; 
-                    const startIdx = (currentP && currentP.length > 0) ? (currentP.find(p => p.index >= (book.progressIndex||0))?.index || currentP[0].index) : (book.progressIndex || 0); 
-                    speak(startIdx); 
-                } 
-            };
-
-            const handleParaClick = (idx) => { 
-                if (ttsState === 'playing') { updateProgress(book.id, { progressIndex: idx }); stopTTS(); setTtsState('playing'); ttsStateRef.current = 'playing'; setTimeout(() => speak(idx), 50); }
-            };
-            const saveNote = () => { if (!noteText.trim()) return; const newNotes = [...(book.notes || []), { id: Date.now(), date: Date.now(), content: noteText, paraIndex: book.progressIndex || 0, pageIndex: currentPage }]; updateProgress(book.id, { notes: newNotes }); setNoteText(''); setShowNoteInput(false); setToastMsg("笔记已保存"); setTimeout(() => setToastMsg(null), 2000); };
-            const toggleFullScreen = () => { if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(err => {}); } else { if (document.exitFullscreen) { document.exitFullscreen(); } } };
-            
-            const handleContentClick = () => { if (showMenu) { setShowMenu(false); } else { setShowMenu(true); setActiveTab('progress'); } };
-            const handleTabClick = (tab) => { 
-                if (activeTab === tab && showMenu) { setShowMenu(false); } 
-                else { setActiveTab(tab); setShowMenu(true); } 
-            };
-            const ts = useRef(0); const onTouchStart = e => ts.current = e.touches[0].clientX;
-            const onTouchEnd = e => { const d = ts.current - e.changedTouches[0].clientX; if (ts.current < 50 && d < -50) { stopTTS(); onBack(); return; } if (Math.abs(d) > 50) { const next = Math.min(Math.max(0, currentPage + (d > 0 ? 1 : -1)), totalPages - 1); setCurrentPage(next); if (contentRef.current) contentRef.current.scrollTop = 0; if (ttsState === 'playing') { stopTTS(); speak(pages[next][0].index); } else updateProgress(book.id, { progressIndex: pages[next][0].index }); } };
-
-            const renderParagraph = (text, isCurrentPara, isSplit) => {
-                const splitClass = isSplit ? 'justify-last-line' : '';
-                // AndroidTTS mode usually doesn't support word-level highlighting
-                if (!isCurrentPara || ttsState !== 'playing' || window.AndroidTTS) return <span className={splitClass} style={textStyle}>{text}</span>; 
-                const sentences = splitSentences(text); 
-                return <span className={splitClass} style={textStyle}>{sentences.map((s, i) => { const isActiveSentence = readingCharIndex >= s.start && readingCharIndex < s.end; return <span key={i} className={isActiveSentence ? 'sentence-active' : ''}>{s.text}</span>; })}</span>; 
-            };
-            if (!pages[currentPage]) return <div className="h-full flex items-center justify-center">加载中...</div>;
-            const jumpToChapter = (idx) => { const pIdx = pages.findIndex(pg => pg.some(i => i.index >= idx)); if (pIdx !== -1) { setCurrentPage(pIdx); updateProgress(book.id, { progressIndex: pages[pIdx][0].index }); if(contentRef.current) contentRef.current.scrollTop = 0; } setShowMenu(false); };
-
-            return (
-                <div className={`flex flex-col h-full relative ${isPaperMode ? 'theme-paper' : (isSepiaMode ? 'theme-sepia' : (isDarkMode ? 'bg-[#121212] text-gray-200' : 'bg-white text-gray-800'))}`}>
-                    <div className={`fixed top-0 inset-x-0 h-16 z-20 flex items-center px-4 transition-transform duration-300 ${showMenu ? 'translate-y-0' : '-translate-y-full'} ${isDarkMode ? 'bg-black/90' : 'bg-white/95 shadow-sm'}`}>
-                        <button onClick={() => {stopTTS(); onBack();}} className="p-2 -ml-2"><Icon name="chevron-left" /></button>
-                        <span className="flex-1 text-center text-sm truncate px-4 text-gray-400 font-medium">{currentChapterNum || book.title}</span>
-                        <div className="flex items-center gap-2 -mr-2"><button onClick={() => setShowNoteInput(true)} className="p-2"><Icon name="edit-3" /></button><button onClick={toggleFullScreen} className="p-2"><Icon name="maximize" /></button></div>
-                    </div>
-
-                    <div ref={contentRef} className="flex-1 overflow-y-auto no-scrollbar animate-slide reader-content" style={contentStyle} onClick={handleContentClick} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>{pages[currentPage].map((item, i) => {
-                        const isActive = item.index === (book.progressIndex || 0);
-                        const isPast = item.index < (book.progressIndex || 0);
-                        let activeClass = isDarkMode ? 'reading-active-dark' : 'reading-active-light';
-                        if (isPaperMode) activeClass = 'reading-active-paper';
-                        if (isSepiaMode) activeClass = 'reading-active-light';
-                        
-                        const isPlaying = ttsState === 'playing';
-                        const finalClass = `mb-4 break-words text-justify-custom ${isPlaying && isActive ? activeClass : ''} ${isPlaying && isPast ? 'read-past' : ''}`;
-
-                        return <p key={i} onClick={(e)=>{ if(isPlaying) { e.stopPropagation(); handleParaClick(item.index); }}} className={finalClass}>{renderParagraph(item.text, isActive, item.isSplit)}</p>
-                    })}</div>
-                    
-                    {!showMenu && <div className="fixed bottom-2 right-4 text-[10px] opacity-40">{currentPage + 1} / {totalPages}</div>}
-                    {toastMsg && <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-black/80 text-white text-xs px-4 py-2 rounded-full shadow-lg">{toastMsg}</div>}
-                    {showNoteInput && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={()=>setShowNoteInput(false)}><div className="w-4/5 max-w-sm bg-white dark:bg-[#1e1e1e] p-5 rounded-2xl" onClick={e=>e.stopPropagation()}><h3 className="text-lg font-bold mb-3">添加笔记</h3><textarea className="w-full h-32 bg-gray-100 dark:bg-black/30 p-2 rounded-xl mb-4 text-sm" value={noteText} onChange={e=>setNoteText(e.target.value)} placeholder="写笔记..." /><div className="flex gap-2"><button onClick={()=>setShowNoteInput(false)} className="flex-1 py-2 bg-gray-200 dark:bg-white/10 rounded-xl text-xs">取消</button><button onClick={saveNote} className="flex-1 py-2 bg-brand text-white rounded-xl text-xs">保存</button></div></div></div>}
-                    {customTimerInput && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setCustomTimerInput(false)}><div className="w-4/5 max-w-sm bg-white dark:bg-[#1e1e1e] p-5 rounded-2xl" onClick={e => e.stopPropagation()}><h3 className="text-lg font-bold mb-3">自定义时间 (分钟)</h3><input type="number" className="w-full p-3 rounded-xl mb-4 bg-gray-100 dark:bg-black/30 text-center text-lg outline-none" value={customMinutes} onChange={e => setCustomMinutes(e.target.value)} autoFocus /><div className="flex gap-2"><button onClick={() => setCustomTimerInput(false)} className="flex-1 py-2 bg-gray-200 dark:bg-white/10 rounded-xl text-xs">取消</button><button onClick={() => { if (customMinutes && !isNaN(customMinutes)) { setTimerMinutes(parseInt(customMinutes)); setCustomTimerInput(false); } }} className="flex-1 py-2 bg-brand text-white rounded-xl text-xs">确定</button></div></div></div>}
-
-                    <div className={`fixed right-6 flex flex-col gap-4 z-30 transition-all duration-300 ${showMenu ? 'bottom-72' : 'bottom-8'}`}>
-                        <button onClick={(e) => { e.stopPropagation(); toggleTTS(); }} className={`w-14 h-14 rounded-full shadow-xl flex items-center justify-center btn-active transition-all ${ttsState === 'playing' ? 'bg-brand text-white animate-breathe-glow' : (isDarkMode ? 'bg-gray-800 text-white border border-white/10' : 'bg-white text-gray-800 border border-gray-100')}`}><Icon name={ttsState === 'playing' ? "pause" : "headphones"} size={24} fill={ttsState === 'playing' ? "currentColor" : "none"} /></button>
-                    </div>
-                    
-                    <div className={`fixed bottom-0 inset-x-0 z-30 transition-transform duration-300 ${showMenu ? 'translate-y-0' : 'translate-y-full'} ${isDarkMode ? 'glass-panel-dark' : 'glass-panel-light'}`}>
-                        <div className="p-6 pb-20 space-y-6 max-h-[45vh] overflow-y-auto no-scrollbar">
-                            {activeTab === 'toc' && <div className="animate-fade-in h-full"><div className="flex justify-between items-center mb-4"><span className="font-bold">目录</span><span className="text-xs opacity-60">共 {chapters.length} 章</span></div><div className="space-y-1">{chapters.length === 0 ? <div className="text-center py-10 opacity-50 text-xs">未识别到目录</div> : chapters.map((c, i) => <div key={i} onClick={() => jumpToChapter(c.index)} className={`p-3 text-sm rounded-lg cursor-pointer ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-black/5'}`}>{c.title}</div>)}</div></div>}
-                            {activeTab === 'progress' && <div className="space-y-6 animate-fade-in"><div className="flex justify-between items-center text-center"><div><span className="text-xl font-bold block">{Math.max(1, Math.round(((currentPage+1)/totalPages)*100))}%</span><div className="text-[10px] opacity-60 flex items-center gap-1 justify-center">阅读进度 {countdown && <span className="text-brand ml-1">{Math.floor(countdown/60)}分后关闭</span>}</div></div><div className="w-[1px] h-4 bg-gray-500/30"></div><div className="text-right"><div className="text-[10px] opacity-60">总时长: {Math.max(1, book.totalTime || 0)}分</div><div className="text-[10px] opacity-60">本次: {Math.max(1, Math.floor((Date.now() - startTime)/60000))}分</div></div></div><input type="range" min="0" max={totalPages - 1} value={currentPage} onChange={e => { setCurrentPage(parseInt(e.target.value)); if(contentRef.current) contentRef.current.scrollTop = 0; }} className={`custom-range ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`} /></div>}
-                            {activeTab === 'layout' && <div className="space-y-4 animate-fade-in"><div className="flex items-center justify-between text-gray-500"><span className="text-[10px] whitespace-nowrap mr-2">字体大小</span><div className={`flex-1 mx-4 flex items-center rounded-full h-8 px-1 relative ${isDarkMode ? 'bg-white/10' : 'bg-gray-100'}`}><div className="absolute h-6 w-6 bg-white rounded-full shadow-sm left-0 transition-all" style={{ left: `calc(${((settings.fontSize - 12) / 20) * 100}% - 12px)` }}></div><input type="range" min="12" max="32" step="2" value={settings.fontSize} onChange={e => setSettings({...settings, fontSize: parseInt(e.target.value)})} className="w-full opacity-0 cursor-pointer z-10" /></div><span className="text-lg">A</span></div><div className="flex items-center justify-between text-gray-500"><span className="text-[10px] whitespace-nowrap mr-2">单页行数</span><div className={`flex flex-1 rounded-lg p-1 gap-1 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>{[ { label: '少(16行)', val: 16 }, { label: '适中(18行)', val: 18 }, { label: '多(20行)', val: 20 } ].map(opt => (<button key={opt.val} onClick={() => setSettings({...settings, linesPerPage: opt.val})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.linesPerPage === opt.val ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>{opt.label}</button>))}</div></div><div className="flex items-center justify-between text-gray-500"><span className="text-[10px] whitespace-nowrap mr-2">页边距</span><div className={`flex flex-1 rounded-lg p-1 gap-1 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}><button onClick={() => setSettings({...settings, pageMargin: 20})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.pageMargin === 20 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>小</button><button onClick={() => setSettings({...settings, pageMargin: 40})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.pageMargin === 40 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>大</button></div></div><div className="flex items-center justify-between text-gray-500"><span className="text-[10px] whitespace-nowrap mr-2">行间距</span><div className={`flex flex-1 rounded-lg p-1 gap-1 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}><button onClick={() => setSettings({...settings, lineHeight: 1.4})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.lineHeight === 1.4 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>紧</button><button onClick={() => setSettings({...settings, lineHeight: 1.8})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.lineHeight === 1.8 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>适中</button><button onClick={() => setSettings({...settings, lineHeight: 2.2})} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${settings.lineHeight === 2.2 ? 'bg-white dark:bg-gray-500 shadow text-black dark:text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>松</button></div></div></div>}
-                            {activeTab === 'voice' && <div className="space-y-4 animate-fade-in"><div className="flex items-center justify-between text-gray-500"><span className="text-[10px] whitespace-nowrap mr-2">音色</span><div className="flex-1 relative"><select className={`w-full text-xs p-2 rounded-lg outline-none appearance-none ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-black'}`} value={settings.voiceURI||''} onChange={e => setSettings({...settings, voiceURI: e.target.value})}>{availableVoices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}</select><Icon name="chevron-down" size={14} className="absolute right-2 top-3 pointer-events-none"/></div></div><div className="flex items-center justify-between text-gray-500"><span className="text-[10px] whitespace-nowrap mr-2">语速</span><div className="flex items-center gap-2 flex-1"><input type="range" min="0.5" max="2.0" step="0.1" value={settings.speechRate} onChange={(e) => setSettings({...settings, speechRate: parseFloat(e.target.value)})} className={`flex-1 h-1 rounded-lg appearance-none cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-gray-300'} accent-brand`}/><span className="text-xs font-bold w-8 text-right">{settings.speechRate}x</span></div></div><div className="flex items-center justify-between text-gray-500"><span className="text-[10px] whitespace-nowrap mr-2">定时关闭</span><div className={`flex flex-1 rounded-lg p-1 gap-1 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>{[ { label: '不开启', val: null }, { label: '30分', val: 30 }, { label: '60分', val: 60 }, { label: '自定义', val: 'custom' } ].map(opt => (<button key={opt.label} onClick={() => { if(opt.val === 'custom') { setCustomTimerInput(true); setCustomMinutes(''); } else { setTimerMinutes(opt.val); } }} className={`flex-1 py-1 text-[10px] rounded-md transition-all ${timerMinutes === opt.val || (opt.val==='custom' && timerMinutes && ![30,60].includes(timerMinutes)) ? 'bg-brand shadow text-white font-bold' : 'text-gray-500 dark:text-gray-400'}`}>{opt.label}</button>))}</div></div></div>}
-                            {activeTab === 'theme' && <div className="space-y-4 animate-fade-in"><div className="flex justify-between gap-2">{['light', 'sepia', 'paper', 'dark'].map(t => (<button key={t} onClick={() => setSettings({...settings, theme: t})} className={`flex-1 py-2 rounded-xl border text-xs ${settings.theme === t ? 'border-brand text-brand font-bold bg-brand/10' : 'border-transparent bg-gray-100 dark:bg-white/5'}`}>{t === 'light' ? '浅色' : t === 'sepia' ? '护眼' : t === 'paper' ? '纸质' : '深色'}</button>))}</div><div className="flex items-center justify-between text-gray-500 animate-fade-in"><span className="text-[10px] whitespace-nowrap mr-2">亮度</span><div className="flex items-center gap-2 flex-1"><Icon name="sun" size={14} /><input type="range" min="20" max="100" step="5" value={settings.brightness || 100} onChange={(e) => setSettings({...settings, brightness: parseInt(e.target.value)})} className={`flex-1 h-1 rounded-lg appearance-none cursor-pointer ${isDarkMode ? 'bg-gray-600' : 'bg-gray-300'} accent-brand`}/><span className="text-xs font-bold w-8 text-right">{settings.brightness || 100}%</span></div></div></div>}
-                        </div>
-
-                        {/* Bottom Nav (Permanent) */}
-                        <div className={`absolute bottom-0 w-full flex justify-around items-center h-14 border-t ${isDarkMode ? 'bg-[#121212] border-white/10' : 'bg-white border-gray-200'}`}>
-                            <button onClick={() => handleTabClick('toc')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'toc' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><Icon name="align-left" size={20} /><span className="text-[10px]">目录</span></button>
-                            <button onClick={() => handleTabClick('progress')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'progress' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><Icon name="sliders-horizontal" size={20} /><span className="text-[10px]">进度</span></button>
-                            <button onClick={() => handleTabClick('layout')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'layout' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><span className="font-serif text-lg font-bold leading-none">A</span><span className="text-[10px]">版式</span></button>
-                            <button onClick={() => handleTabClick('voice')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'voice' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><Icon name="mic" size={20} /><span className="text-[10px]">朗读</span></button>
-                            <button onClick={() => handleTabClick('theme')} className={`flex flex-col items-center gap-1 btn-press transition-colors ${activeTab === 'theme' ? 'text-brand' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}><Icon name={isDarkMode ? "moon" : "sun"} size={20} /><span className="text-[10px]">主题</span></button>
-                        </div>
-                    </div>
-                    <div className="pointer-events-none fixed inset-0 z-50 bg-black transition-opacity duration-300" style={{ opacity: (100 - (settings.brightness || 100)) / 100 }}></div>
                 </div>
             );
         };
