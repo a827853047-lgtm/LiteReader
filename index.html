@@ -435,8 +435,6 @@
                 if (!pages[pageIndex]) return [];
                 const queue = [];
                 pages[pageIndex].forEach(item => {
-                    // item 是页面上的一个段落片段 { text, index, offset }
-                    // 我们把它切分为句子，并加上全局坐标
                     const sentences = splitSentences(item.text);
                     sentences.forEach(s => {
                         queue.push({
@@ -450,10 +448,20 @@
                 return queue;
             };
 
+            // 【优化】更精准的时长估算，减少无效等待
             const estimateDuration = (text, rate) => {
-                let cjkCount = 0; let latinCount = 0;
-                for (let char of text) { if (/[\u4e00-\u9fa5]/.test(char)) cjkCount++; else latinCount++; }
-                const baseTime = (cjkCount * 220) + (latinCount * 60) + 200; // 稍快一点的基准
+                let cjkCount = 0; 
+                let latinCount = 0;
+                let punctuationCount = 0;
+                
+                for (let char of text) { 
+                    if (/[\u4e00-\u9fa5]/.test(char)) cjkCount++; 
+                    else if (/[a-zA-Z0-9]/.test(char)) latinCount++;
+                    else if (/[,\.\?!;:"'，。？！；：“”‘’]/.test(char)) punctuationCount++;
+                }
+                
+                // 中文~260ms, 英文~80ms, 标点~200ms停顿补偿, 基础启动耗时~100ms
+                const baseTime = (cjkCount * 260) + (latinCount * 80) + (punctuationCount * 200) + 100; 
                 return baseTime * (1 / rate);
             };
 
@@ -476,11 +484,11 @@
                         if (newQueue.length > 0) {
                             playQueueRef.current = newQueue;
                             playQueueIndexRef.current = 0;
-                            // 稍微延迟一下等待渲染（虽然React State是异步的，但数据模型pages是同步的）
+                            // 稍微延迟一下等待渲染
                             setTimeout(playNextSentence, 50); 
                         } else {
                             // 空页面？继续下一页
-                            playQueueIndexRef.current = 0; // 重置防止溢出
+                            playQueueIndexRef.current = 0; 
                             setTimeout(playNextSentence, 50); 
                         }
                     } else {
@@ -530,9 +538,11 @@
                         window.AndroidTTS.onEnd = finish;
                         if (window.AndroidTTS.onError) window.AndroidTTS.onError = finish;
 
-                        // 估算时长作为兜底
+                        // 【关键修改】大幅缩减看门狗的冗余时间
+                        // 之前的 +3000ms 改为 +200ms。
+                        // 如果 onEnd 失效，只会多等 0.2 秒就自动跳下一句，几乎无感。
                         const duration = estimateDuration(textToSpeak, speechRate);
-                        timerRef.current = setTimeout(finish, duration + 3000); // 3秒冗余
+                        timerRef.current = setTimeout(finish, duration + 200); 
 
                     } catch (e) {
                         console.error('AndroidTTS error:', e);
