@@ -458,30 +458,44 @@
                 }
                 updateProgress(book.id, { progressIndex: idx });
 
+                // 获取要朗读的文本
+                const textToSpeak = book.content[idx];
+                
+                // 检查文本是否为空
+                if (!textToSpeak || textToSpeak.trim().length === 0) {
+                    setTimeout(() => speak(idx + 1), 10);
+                    return;
+                }
+
                 // 在Android应用中优先使用AndroidTTS (WebView JS Bridge方式)
                 if (window.AndroidTTS) {
                     try {
-                        window.AndroidTTS.speak(book.content[idx], {
-                            rate: settingsRef.current.speechRate,
-                            voiceURI: settingsRef.current.voiceURI
-                        });
-                        // 设置AndroidTTS的回调
-                        window.AndroidTTS.onEnd = () => {
+                        // 准备TTS参数
+                        const speechRate = settingsRef.current.speechRate;
+                        const voiceURI = settingsRef.current.voiceURI;
+                        
+                        // 调用AndroidTTS的speak方法
+                        window.AndroidTTS.speak(textToSpeak, `rate:${speechRate},voiceURI:${voiceURI}`);
+                        
+                        // 设置自动播放下一段的定时器（基于文本长度估算播放时间）
+                        const estimatedDuration = textToSpeak.length * 0.05 * (1 / speechRate); // 平均每个字符0.05秒
+                        setTimeout(() => {
                             if (ttsStateRef.current === 'playing') {
                                 setReadingCharIndex(0);
                                 speak(idx + 1);
                             }
-                        };
-                        window.AndroidTTS.onError = () => {
-                            if (ttsStateRef.current === 'playing') {
-                                setTimeout(() => speak(idx + 1), 200);
-                            }
-                        };
+                        }, estimatedDuration * 1000 + 500); // 增加500ms的缓冲时间
+                        
+                        console.log('Using AndroidTTS to speak:', textToSpeak.substring(0, 50) + '...');
                     } catch (e) {
                         console.error('AndroidTTS error:', e);
-                        // 如果AndroidTTS出错，尝试使用synth
+                        // 如果AndroidTTS出错，尝试使用Web Speech API
                         if (synth) {
                             useSynth(idx);
+                        } else {
+                            // 如果都不可用，显示错误信息并停止
+                            setToastMsg('语音合成不可用');
+                            stopTTS();
                         }
                     }
                 } else if (synth) {
