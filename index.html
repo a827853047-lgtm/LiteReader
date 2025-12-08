@@ -430,7 +430,6 @@
 
             // --- 核心朗读重构 (Point & Read) ---
 
-            // 生成当前页面的播放队列（句级）
             const generatePageQueue = (pageIndex) => {
                 if (!pages[pageIndex]) return [];
                 const queue = [];
@@ -448,20 +447,17 @@
                 return queue;
             };
 
-            // 【优化】更精准的时长估算，减少无效等待
+            // 【优化】安卓时间估算：基数加大(防抢读) + 标点补偿
             const estimateDuration = (text, rate) => {
-                let cjkCount = 0; 
-                let latinCount = 0;
+                let cjkCount = 0; let latinCount = 0;
                 let punctuationCount = 0;
-                
                 for (let char of text) { 
                     if (/[\u4e00-\u9fa5]/.test(char)) cjkCount++; 
                     else if (/[a-zA-Z0-9]/.test(char)) latinCount++;
                     else if (/[,\.\?!;:"'，。？！；：“”‘’]/.test(char)) punctuationCount++;
                 }
-                
-                // 中文~260ms, 英文~80ms, 标点~200ms停顿补偿, 基础启动耗时~100ms
-                const baseTime = (cjkCount * 260) + (latinCount * 80) + (punctuationCount * 200) + 100; 
+                // 320ms/字，确保覆盖慢速；80ms缓冲在调用处加
+                const baseTime = (cjkCount * 320) + (latinCount * 100) + (punctuationCount * 400) + 200; 
                 return baseTime * (1 / rate);
             };
 
@@ -472,22 +468,17 @@
                 const queue = playQueueRef.current;
                 const idx = playQueueIndexRef.current;
 
-                // 1. 本页读完了 -> 翻到下一页
                 if (idx >= queue.length) {
                     const nextPage = currentPage + 1;
                     if (nextPage < pages.length) {
-                        setCurrentPage(nextPage); // 翻页
+                        setCurrentPage(nextPage); 
                         if(contentRef.current) contentRef.current.scrollTop = 0;
-                        
-                        // 准备新页面的队列
                         const newQueue = generatePageQueue(nextPage);
                         if (newQueue.length > 0) {
                             playQueueRef.current = newQueue;
                             playQueueIndexRef.current = 0;
-                            // 稍微延迟一下等待渲染
                             setTimeout(playNextSentence, 50); 
                         } else {
-                            // 空页面？继续下一页
                             playQueueIndexRef.current = 0; 
                             setTimeout(playNextSentence, 50); 
                         }
@@ -498,24 +489,20 @@
                     return;
                 }
 
-                // 2. 播放当前句子
                 const currentItem = queue[idx];
                 
-                // 更新高亮状态
                 setCurrentSentence({
                     paraIdx: currentItem.paraIdx,
                     start: currentItem.start,
                     end: currentItem.end
                 });
                 
-                // 更新阅读进度记录（记录段落即可）
                 updateProgress(book.id, { progressIndex: currentItem.paraIdx });
 
                 const textToSpeak = currentItem.text;
                 const speechRate = settingsRef.current.speechRate;
                 const voiceURI = settingsRef.current.voiceURI;
 
-                // --- 引擎调用 ---
                 if (window.AndroidTTS) {
                     try {
                         if (simulationRef.current) clearInterval(simulationRef.current);
@@ -523,7 +510,6 @@
 
                         window.AndroidTTS.speak(textToSpeak, { rate: speechRate, voiceURI: voiceURI });
 
-                        // 安卓双保险：回调 + 估算看门狗
                         let finished = false;
                         const finish = () => {
                             if (finished) return;
@@ -531,18 +517,16 @@
                             if (simulationRef.current) clearInterval(simulationRef.current);
                             if (timerRef.current) clearTimeout(timerRef.current);
                             
-                            playQueueIndexRef.current += 1; // 准备下一句
+                            playQueueIndexRef.current += 1; 
                             playNextSentence();
                         };
 
                         window.AndroidTTS.onEnd = finish;
                         if (window.AndroidTTS.onError) window.AndroidTTS.onError = finish;
 
-                        // 【关键修改】大幅缩减看门狗的冗余时间
-                        // 之前的 +3000ms 改为 +200ms。
-                        // 如果 onEnd 失效，只会多等 0.2 秒就自动跳下一句，几乎无感。
+                        // 估算时长 + 80ms 极短缓冲
                         const duration = estimateDuration(textToSpeak, speechRate);
-                        timerRef.current = setTimeout(finish, duration + 200); 
+                        timerRef.current = setTimeout(finish, duration + 80); 
 
                     } catch (e) {
                         console.error('AndroidTTS error:', e);
@@ -578,8 +562,10 @@
                 if (synth) synth.cancel(); 
                 if (timerRef.current) clearTimeout(timerRef.current); 
                 if (simulationRef.current) clearInterval(simulationRef.current);
+                
                 setTtsState('stopped'); 
-                setCurrentSentence(null); // 清除高亮
+                // 注意：这里移除了 setCurrentSentence(null)，实现暂停保留高亮
+                
                 releaseWakeLock(); 
                 if (heartbeatRef.current) clearInterval(heartbeatRef.current); 
             };
@@ -595,39 +581,52 @@
                 if (ttsState === 'playing') { 
                     stopTTS();
                 } else { 
-                    stopTTS(); // 确保先停止
+                    if (window.AndroidTTS) { if(window.AndroidTTS.stop) window.AndroidTTS.stop(); }
+                    if (synth) synth.cancel();
+                    if (timerRef.current) clearTimeout(timerRef.current);
                     
                     setTtsState('playing'); 
                     ttsStateRef.current = 'playing'; 
                     requestWakeLock(); 
                     
-                    // 指哪读哪：从当前页面开始，重新构建队列
                     const queue = generatePageQueue(currentPage);
                     playQueueRef.current = queue;
-                    playQueueIndexRef.current = 0; // 从第一句开始
                     
+                    // 断点续播：如果有高亮记录，从该句继续
+                    let startIndex = 0;
+                    if (currentSentence) {
+                        const resumeIndex = queue.findIndex(item => 
+                            item.paraIdx === currentSentence.paraIdx && 
+                            item.start === currentSentence.start
+                        );
+                        if (resumeIndex !== -1) {
+                            startIndex = resumeIndex;
+                        }
+                    }
+                    
+                    playQueueIndexRef.current = startIndex; 
                     playNextSentence(); 
                 } 
             };
 
-            // 监听翻页事件：如果在朗读中翻页，则重置队列从新页开始读
             useEffect(() => {
                 if (ttsState === 'playing' && manualNavigation) {
-                    stopTTS(); // 先停，避免声音重叠
-                    // 重新开始逻辑
+                    stopTTS(); 
                     setTimeout(() => {
                         setTtsState('playing');
                         ttsStateRef.current = 'playing';
                         const queue = generatePageQueue(currentPage);
                         playQueueRef.current = queue;
-                        playQueueIndexRef.current = 0;
+                        playQueueIndexRef.current = 0; 
                         setManualNavigation(false);
                         playNextSentence();
                     }, 100);
+                } else if (manualNavigation) {
+                    setCurrentSentence(null);
+                    setManualNavigation(false);
                 }
             }, [currentPage, manualNavigation]); 
 
-            // Bind Media Session Handlers
             useEffect(() => {
                 if (!('mediaSession' in navigator)) return;
                 const handleNext = () => {
@@ -648,12 +647,11 @@
             }, [currentPage, totalPages, toggleTTS]); 
 
             const handleParaClick = (idx) => { 
-                // 点击段落 -> 跳转并朗读 (可选)
                 const pIdx = pages.findIndex(pg => pg.some(i => i.index === idx));
                 if (pIdx !== -1) {
                     setCurrentPage(pIdx);
                     if (ttsState === 'playing') {
-                        setManualNavigation(true); // 触发重读逻辑
+                        setManualNavigation(true); 
                     }
                 }
             };
@@ -687,8 +685,11 @@
                         const next = Math.min(Math.max(0, currentPage + (diffX > 0 ? -1 : 1)), totalPages - 1);
                         setCurrentPage(next);
                         if(contentRef.current) contentRef.current.scrollTop = 0;
-                        if (ttsState === 'playing') setManualNavigation(true); 
-                        else updateProgress(book.id, { progressIndex: pages[next][0].index });
+                        setManualNavigation(true); 
+                        if (ttsState !== 'playing') {
+                            updateProgress(book.id, { progressIndex: pages[next][0].index });
+                            setCurrentSentence(null);
+                        }
                         isGestureHandled.current = true; 
                     }
                 }
@@ -704,7 +705,13 @@
 
             const jumpToChapter = (idx) => { 
                 const pIdx = pages.findIndex(pg => pg.some(i => i.index >= idx)); 
-                if (pIdx !== -1) { setCurrentPage(pIdx); updateProgress(book.id, { progressIndex: pages[pIdx][0].index }); if(contentRef.current) contentRef.current.scrollTop = 0; } 
+                if (pIdx !== -1) { 
+                    setCurrentPage(pIdx); 
+                    updateProgress(book.id, { progressIndex: pages[pIdx][0].index }); 
+                    if(contentRef.current) contentRef.current.scrollTop = 0; 
+                    setCurrentSentence(null);
+                    if (ttsState === 'playing') setManualNavigation(true);
+                } 
                 setShowMenu(false); 
             };
 
@@ -724,7 +731,6 @@
             const renderParagraph = (text, isCurrentPara, isSplit, offset = 0) => {
                 const splitClass = isSplit ? 'justify-stretch' : 'justify-normal';
                 
-                // 只有当正在朗读，且当前段落ID匹配时，才进行高亮渲染
                 if (ttsState !== 'playing' || !currentSentence || currentSentence.paraIdx !== isCurrentPara) {
                     return <span className={splitClass} style={textStyle}>{text}</span>; 
                 }
@@ -733,11 +739,8 @@
                 return (
                     <span className={splitClass} style={textStyle}>
                         {sentences.map((s, i) => {
-                            // 计算当前句子的全局offset
                             const globalStart = offset + s.start;
-                            // 只要当前播放句子的起始位置 == 这个句子的起始位置，就高亮
                             const isActive = currentSentence.start === globalStart;
-                            
                             return (
                                 <span key={i} className={isActive ? 'sentence-highlight' : ''}>
                                     {s.text}
@@ -752,7 +755,6 @@
 
             return (
                 <div className={`flex flex-col h-full relative ${isPaperMode ? 'theme-paper' : (isSepiaMode ? 'theme-sepia' : (isDarkMode ? 'bg-[#121212] text-gray-200' : 'bg-white text-gray-800'))}`}>
-                    {/* Top Menu */}
                     <div className={`fixed top-0 inset-x-0 z-20 flex items-center px-4 transition-transform duration-300 ${showMenu ? 'translate-y-0' : '-translate-y-full'} ${menuBgClass} ${menuTextClass} border-b ${menuBorderClass} h-header-h pt-safe-top`}>
                         <button onClick={() => {stopTTS(); toggleFullScreenMode(false); onBack();}} className="p-2 -ml-2"><Icon name="chevron-left" /></button>
                         <span className="flex-1 text-center text-sm font-bold truncate px-2 opacity-80">{book.title}</span>
@@ -1232,7 +1234,6 @@
             );
         };
 
-        // --- App Component (Defined Last) ---
         const App = () => {
             const [view, setView] = useState('shelf');
             const [books, setBooks] = useState(() => {
