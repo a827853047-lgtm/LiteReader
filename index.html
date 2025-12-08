@@ -255,7 +255,7 @@
             const heartbeatRef = useRef(null);
             const timerRef = useRef(null); 
             const longPressTimer = useRef(null); 
-            const silentAudioRef = useRef(null); // Silent Audio for Background Playback
+            const silentAudioRef = useRef(null); 
             
             // Touch state refs
             const touchStartX = useRef(0);
@@ -302,16 +302,13 @@
                 let allVoices = synth.getVoices();
                 if (!allVoices || allVoices.length === 0) return;
 
-                // 优先寻找中文语音
                 let voices = allVoices.filter(v => v.lang.includes('zh') || v.lang.includes('cmn') || v.name.includes('Chinese') || v.name.includes('China'));
                 
-                // 如果找不到中文语音，但系统有其他语音，则为了兼容性显示所有语音（方便用户排查）
                 if (voices.length === 0 && allVoices.length > 0) {
                     voices = allVoices;
                 }
 
                 voices.sort((a, b) => {
-                    // 优先显示 Google 的高质量语音
                     const aIsGoogle = a.name.toLowerCase().includes('google');
                     const bIsGoogle = b.name.toLowerCase().includes('google');
                     if (aIsGoogle && !bIsGoogle) return -1;
@@ -321,9 +318,7 @@
                 
                 const defaultOption = { name: "系统默认 (自动选择)", voiceURI: "" };
                 
-                // 使用函数式更新，避免依赖闭包中的旧状态
                 setAvailableVoices(prev => {
-                    // 简单去重判断，防止频繁刷新导致UI闪烁
                     if (prev.length === voices.length + 1 && prev[1]?.voiceURI === voices[0]?.voiceURI) {
                         return prev;
                     }
@@ -336,21 +331,15 @@
                 if (synth && synth.onvoiceschanged !== undefined) {
                     synth.onvoiceschanged = loadVoices;
                 }
-                
-                // 轮询机制：解决安卓WebView异步加载语音列表不触发事件的问题
-                // 每500ms尝试获取一次，持续5秒
                 const timer = setInterval(loadVoices, 500);
                 const stopTimer = setTimeout(() => clearInterval(timer), 5000);
-
                 return () => { 
                     clearInterval(timer); 
                     clearTimeout(stopTimer);
                 }; 
             }, [loadVoices, synth]);
 
-            // Initialize Silent Audio for Background Playback
             useEffect(() => {
-                // Short silent WAV
                 silentAudioRef.current = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
                 silentAudioRef.current.loop = true;
 
@@ -377,7 +366,7 @@
                 }
             };
             
-            // 优化分页逻辑：记录 offset (在原段落中的起始位置)
+            // 优化分页逻辑：记录 offset
             const pages = useMemo(() => {
                 const containerWidth = window.innerWidth - (settings.pageMargin * 2); 
                 const charsPerLine = Math.floor(containerWidth / settings.fontSize);
@@ -389,7 +378,6 @@
                 const chapterIndices = new Set(book.chapters ? book.chapters.map(c => c.index) : []);
 
                 book.content.forEach((txt, idx) => {
-                    // 统一去除头部空格，确保 TTS 和显示一致
                     const text = txt.replace(/^\s+/, ''); 
                     if (text.length === 0) return; 
                     
@@ -403,7 +391,7 @@
                     const textLines = Math.ceil(text.length / charsPerLine);
                     let remainingText = text;
                     let remainingLinesInPara = textLines;
-                    let currentOffset = 0; // 记录当前切片在原段落(去空格后)中的偏移量
+                    let currentOffset = 0; 
 
                     while (remainingText.length > 0) {
                         const linesLeftOnPage = linesPerPage - currentLines;
@@ -416,7 +404,6 @@
                         }
 
                         if (remainingLinesInPara <= linesLeftOnPage) {
-                            // 记录 offset
                             page.push({ text: remainingText, index: idx, offset: currentOffset, split: false });
                             currentLines += remainingLinesInPara;
                             if (currentLines < linesPerPage) currentLines += 0.5; 
@@ -429,10 +416,9 @@
                             if (cutIdx > remainingText.length) cutIdx = remainingText.length;
 
                             const chunk = remainingText.substring(0, cutIdx);
-                            // 记录 offset
                             page.push({ text: chunk, index: idx, offset: currentOffset, split: true });
                             
-                            currentOffset += chunk.length; // 更新偏移量
+                            currentOffset += chunk.length; 
 
                             result.push(page);
                             page = [];
@@ -459,13 +445,9 @@
                 return () => { if (timerRef.current) clearInterval(timerRef.current); };
             }, [timerMinutes]);
 
-            // Handle Silent Audio Playback for Background Mode
             useEffect(() => {
                 if (ttsState === 'playing') {
-                    // Play silent audio to keep background alive
                     silentAudioRef.current?.play().catch(e => console.log("Silent Audio Error:", e));
-                    
-                    // Update Media Session
                     if ('mediaSession' in navigator) {
                         navigator.mediaSession.playbackState = 'playing';
                         navigator.mediaSession.metadata = new MediaMetadata({
@@ -483,72 +465,75 @@
                 }
             }, [ttsState, book]);
 
-            // 修改 speak 函数签名，支持传入 startOffset (段内偏移量)
+            // ------ 朗读核心逻辑梳理 ------
+
+            const handleSpeechEnd = () => {
+                if (ttsStateRef.current === 'playing') {
+                    setReadingCharIndex(0); 
+                    const currentIdx = book.progressIndex || 0;
+                    speak(currentIdx + 1, 0); 
+                }
+            };
+
             const speak = (idx, startOffset = 0) => {
                 if (ttsStateRef.current !== 'playing') return; 
                 if (idx >= book.content.length) { setTtsState('stopped'); return; }
                 
-                const pIdx = pages.findIndex(pg => pg.some(i => i.index === idx));
-                if (pIdx !== -1 && pIdx !== currentPage) { 
-                    setCurrentPage(pIdx); 
-                    if(contentRef.current) contentRef.current.scrollTop = 0; 
+                const currentP = pages[currentPage];
+                const isParaOnCurrentPage = currentP && currentP.some(i => i.index === idx);
+
+                if (!isParaOnCurrentPage) {
+                    const pIdx = pages.findIndex(pg => pg.some(i => i.index === idx));
+                    if (pIdx !== -1 && pIdx !== currentPage) { 
+                        setCurrentPage(pIdx); 
+                        if(contentRef.current) contentRef.current.scrollTop = 0; 
+                    }
                 }
+                
                 updateProgress(book.id, { progressIndex: idx });
 
-                // 获取要朗读的文本，去除头部空格
                 const rawText = book.content[idx];
                 let textToSpeak = rawText ? rawText.replace(/^\s+/, '') : '';
                 
-                // 核心逻辑：如果存在 startOffset，截取文本从中间开始读
                 if (startOffset > 0 && startOffset < textToSpeak.length) {
                     textToSpeak = textToSpeak.substring(startOffset);
                 }
                 
-                // 检查文本是否为空
                 if (!textToSpeak || textToSpeak.trim().length === 0) {
-                    setTimeout(() => speak(idx + 1), 10);
+                    setTimeout(() => speak(idx + 1, 0), 50);
                     return;
                 }
 
-                // 在Android应用中优先使用AndroidTTS (WebView JS Bridge方式)
+                const speechRate = settingsRef.current.speechRate;
+                const voiceURI = settingsRef.current.voiceURI;
+
                 if (window.AndroidTTS) {
                     try {
-                        const speechRate = settingsRef.current.speechRate;
-                        const voiceURI = settingsRef.current.voiceURI;
+                        window.AndroidTTS.speak(textToSpeak, { rate: speechRate, voiceURI: voiceURI });
                         
-                        // 【修复】回滚参数格式为对象，兼容旧版接口
-                        // 之前错误写法：`rate:${speechRate},voiceURI:${voiceURI}`
-                        window.AndroidTTS.speak(textToSpeak, {
-                            rate: speechRate,
-                            voiceURI: voiceURI
-                        });
+                        const estimatedDuration = (textToSpeak.length * 0.4 * (1 / speechRate) * 1000) + 1500; 
                         
-                        // AndroidTTS通常没有实时的Word boundary回调，所以使用时间估算
-                        const estimatedDuration = textToSpeak.length * 0.2 * (1 / speechRate); // 估算
-                        setTimeout(() => {
-                            if (ttsStateRef.current === 'playing') {
-                                setReadingCharIndex(0);
-                                speak(idx + 1);
-                            }
-                        }, estimatedDuration * 1000 + 500); 
+                        if (timerRef.current) clearTimeout(timerRef.current);
+                        timerRef.current = setTimeout(() => {
+                            handleSpeechEnd();
+                        }, estimatedDuration);
+
                     } catch (e) {
                         console.error('AndroidTTS error:', e);
-                        // 如果调用失败，自动降级到 Web Speech API
-                        if (synth) useSynth(idx, textToSpeak, startOffset); 
+                        if (synth) engineSpeakWeb(idx, textToSpeak, startOffset); 
                         else { setToastMsg('语音合成不可用'); stopTTS(); }
                     }
-                } else if (synth) {
-                    useSynth(idx, textToSpeak, startOffset);
+                } 
+                else if (synth) {
+                    engineSpeakWeb(idx, textToSpeak, startOffset);
                 } else {
                     setToastMsg('语音合成不可用');
                     stopTTS();
                 }
             };
 
-            // 修改 useSynth，接收 startOffset 以便修正高亮位置
-            const useSynth = (idx, textToSpeak, startOffset = 0) => {
-                if (!synth || ttsStateRef.current !== 'playing') return;
-                
+            const engineSpeakWeb = (idx, textToSpeak, startOffset) => {
+                if (!synth) return;
                 synth.cancel(); 
 
                 try {
@@ -577,7 +562,6 @@
 
                     u.onboundary = (event) => { 
                         if (event.name === 'sentence' || event.name === 'word') { 
-                            // 核心修正：当前高亮索引 = 语音引擎返回的当前句内索引 + 段落起始偏移量
                             const charIdx = event.charIndex + startOffset;
                             setReadingCharIndex(charIdx); 
                             
@@ -594,29 +578,23 @@
                         } 
                     };
 
-                    u.onend = () => { 
-                        if (ttsStateRef.current === 'playing') {
-                            setReadingCharIndex(0); 
-                            speak(idx + 1); 
-                        }
-                    };
+                    u.onend = handleSpeechEnd;
+                    
                     u.onerror = (e) => { 
                         if (e.error === 'interrupted' || e.error === 'canceled') return;
-
-                        console.error('TTS Playback Error:', e.error);
-                        
+                        console.error('TTS Error:', e.error);
                         if (e.error === 'not-allowed' || e.error === 'network') {
-                            setToastMsg("TTS调用失败，请检查系统权限或网络");
+                            setToastMsg("TTS调用失败，请检查系统权限");
                         }
-                        
                         if(ttsStateRef.current === 'playing') {
-                            setTimeout(() => speak(idx+1), 200); 
+                            setTimeout(() => speak(idx+1, 0), 200); 
                         }
                     };
+                    
                     ttsRef.current = u; 
                     synth.speak(u);
                 } catch (e) {
-                    console.error('Synth initialization error:', e);
+                    console.error('Synth Init Error:', e);
                     setToastMsg('语音合成初始化失败');
                     stopTTS();
                 }
@@ -625,12 +603,12 @@
             const stopTTS = () => { 
                 if (window.AndroidTTS) window.AndroidTTS.stop();
                 if (synth) synth.cancel(); 
+                if (timerRef.current) clearTimeout(timerRef.current); 
                 setTtsState('stopped'); 
                 releaseWakeLock(); 
                 if (heartbeatRef.current) clearInterval(heartbeatRef.current); 
             };
 
-            // 新增：全屏控制辅助函数
             const toggleFullScreenMode = (enable) => {
                 try {
                     if (enable) {
@@ -651,6 +629,7 @@
                 } else { 
                     if (window.AndroidTTS) window.AndroidTTS.stop();
                     if (synth) synth.cancel();
+                    if (timerRef.current) clearTimeout(timerRef.current);
                     
                     setTtsState('playing'); 
                     ttsStateRef.current = 'playing'; 
@@ -661,19 +640,13 @@
                     let startIdx;
                     let startOffset = 0;
 
-                    // 修改逻辑：如果是手动导航（如滑动进度条），则强制从当前页面的第一个字符开始读
-                    if (manualNavigation && currentP && currentP.length > 0) {
+                    if (currentP && currentP.length > 0) {
                         const firstItem = currentP[0];
                         startIdx = firstItem.index;
-                        startOffset = firstItem.offset || 0; // 获取段落偏移量
-                        setManualNavigation(false); 
+                        startOffset = firstItem.offset || 0;
+                        setManualNavigation(false);
                     } else {
-                        // 正常恢复播放：寻找当前页对应的进度
                         startIdx = (book.progressIndex || 0);
-                        // 如果当前页不包含记录的进度段落（防止乱跳），则回退到页首
-                        if (currentP && !currentP.some(p => p.index === startIdx)) {
-                             startIdx = currentP[0].index;
-                        }
                     }
                     
                     speak(startIdx, startOffset); 
@@ -690,7 +663,8 @@
                     if (contentRef.current) contentRef.current.scrollTop = 0;
                     if (ttsStateRef.current === 'playing') {
                         stopTTS(); 
-                        speak(pages[next][0].index); 
+                        const firstItem = pages[next][0];
+                        speak(firstItem.index, firstItem.offset || 0); 
                     } else {
                         updateProgress(book.id, { progressIndex: pages[next][0].index });
                     }
@@ -702,7 +676,8 @@
                     if (contentRef.current) contentRef.current.scrollTop = 0;
                     if (ttsStateRef.current === 'playing') {
                         stopTTS(); 
-                        speak(pages[prev][0].index); 
+                        const firstItem = pages[prev][0];
+                        speak(firstItem.index, firstItem.offset || 0); 
                     } else {
                         updateProgress(book.id, { progressIndex: pages[prev][0].index });
                     }
@@ -717,7 +692,7 @@
             }, [currentPage, pages, totalPages, toggleTTS]); 
 
             const handleParaClick = (idx) => { 
-                if (ttsState === 'playing') { updateProgress(book.id, { progressIndex: idx }); stopTTS(); setTtsState('playing'); ttsStateRef.current = 'playing'; setTimeout(() => speak(idx), 50); }
+                if (ttsState === 'playing') { updateProgress(book.id, { progressIndex: idx }); stopTTS(); setTtsState('playing'); ttsStateRef.current = 'playing'; setTimeout(() => speak(idx, 0), 50); }
             };
 
             const handleTouchStart = (e) => {
@@ -781,7 +756,8 @@
                         if (contentRef.current) contentRef.current.scrollTop = 0;
                         if (ttsState === 'playing') {
                              stopTTS(); 
-                             speak(pages[next][0].index); 
+                             const firstItem = pages[next][0];
+                             speak(firstItem.index, firstItem.offset || 0);
                         } else {
                             updateProgress(book.id, { progressIndex: pages[next][0].index });
                         }
@@ -793,11 +769,9 @@
             const handleContentClick = () => { 
                 if (!isGestureHandled.current && !showNoteInput) {
                     if (showMenu) { 
-                        // 菜单当前打开 -> 关闭菜单，同时进入全屏（隐藏系统栏）
                         setShowMenu(false); 
                         toggleFullScreenMode(true);
                     } else { 
-                        // 菜单当前关闭 -> 打开菜单，同时退出全屏（显示系统栏）
                         setShowMenu(true); 
                         setActiveTab('progress'); 
                         toggleFullScreenMode(false);
@@ -839,8 +813,6 @@
                 setTimeout(() => setToastMsg(null), 2000); 
             };
             
-            const toggleFullScreen = () => { if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(err => {}); } else { if (document.exitFullscreen) { document.exitFullscreen(); } } };
-            
             const handleTabClick = (tab) => { 
                 if (activeTab === tab && showMenu) { setShowMenu(false); } 
                 else { setActiveTab(tab); setShowMenu(true); } 
@@ -854,7 +826,6 @@
             else if (isSepiaMode) { menuBgClass = 'bg-[#f6ecd5]'; menuTextClass = 'text-[#5b4636]'; menuBorderClass = 'border-[#5b4636]/10'; }
             else if (isDarkMode) { menuBgClass = 'bg-[#1c1c1e]'; menuTextClass = 'text-[#e5e5e7]'; menuBorderClass = 'border-white/10'; }
 
-            // 修复: 增加 offset 参数，计算全局索引
             const renderParagraph = (text, isCurrentPara, isSplit, offset = 0) => {
                 const splitClass = isSplit ? 'justify-stretch' : 'justify-normal';
                 
@@ -863,7 +834,6 @@
                 }
                 const sentences = splitSentences(text); 
                 return <span className={splitClass} style={textStyle}>{sentences.map((s, i) => { 
-                    // 关键修复：加上 offset 才是全局 TTS 索引
                     const globalStart = offset + s.start;
                     const globalEnd = offset + s.end;
                     const isActiveSentence = readingCharIndex >= globalStart && readingCharIndex < globalEnd; 
@@ -1388,7 +1358,6 @@
             );
         };
 
-        // --- App Component (Defined Last) ---
         const App = () => {
             const [view, setView] = useState('shelf');
             const [books, setBooks] = useState(() => {
