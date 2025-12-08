@@ -306,6 +306,12 @@
                         if (!aIsGoogle && bIsGoogle) return 1;
                         return 0;
                     });
+                    
+                    // 检测安卓 11+ 权限问题的典型症状：是安卓设备，但获取到的 voices 为空
+                    if (voices.length === 0 && /Android/i.test(navigator.userAgent)) {
+                        console.warn("[LiteReader] 检测到安卓环境下语音列表为空。如果是APP WebView环境，请确保AndroidManifest.xml包含<queries>声明以允许访问TTS服务，或开启混合内容模式。");
+                    }
+
                     const defaultOption = { name: "系统默认 (自动选择)", voiceURI: "" };
                     setAvailableVoices([defaultOption, ...voices]);
                 }; 
@@ -452,7 +458,7 @@
                 }
                 updateProgress(book.id, { progressIndex: idx });
 
-                // 在Android应用中优先使用AndroidTTS
+                // 在Android应用中优先使用AndroidTTS (WebView JS Bridge方式)
                 if (window.AndroidTTS) {
                     try {
                         window.AndroidTTS.speak(book.content[idx], {
@@ -491,30 +497,32 @@
             const useSynth = (idx) => {
                 if (!synth || ttsStateRef.current !== 'playing') return;
                 
+                // 1. 移除 setTimeout，直接执行以保持用户手势上下文 (解决 iOS/Chrome 的权限错误)
                 synth.cancel(); 
-                setTimeout(() => {
-                    if (ttsStateRef.current !== 'playing') return;
 
-                    const textToSpeak = book.content[idx];
-                    if (!textToSpeak || textToSpeak.trim().length === 0) {
-                        speak(idx + 1); 
-                        return;
+                const textToSpeak = book.content[idx];
+                
+                // 2. 增加空内容检查
+                if (!textToSpeak || textToSpeak.trim().length === 0) {
+                    // 使用极短的 timeout 避免调用栈溢出
+                    setTimeout(() => speak(idx + 1), 10);
+                    return;
+                }
+
+                try {
+                    const u = new SpeechSynthesisUtterance(textToSpeak); 
+                    window.currentUtterance = u; // 防止垃圾回收导致的中断
+                    const curSettings = settingsRef.current; 
+                    u.rate = curSettings.speechRate;
+                    
+                    if (curSettings.voiceURI) { 
+                        const v = synth.getVoices().find(x => x.voiceURI === curSettings.voiceURI); 
+                        if(v) u.voice = v; 
                     }
-
-                    try {
-                        const u = new SpeechSynthesisUtterance(textToSpeak); 
-                        window.currentUtterance = u; 
-                        const curSettings = settingsRef.current; 
-                        u.rate = curSettings.speechRate;
-                        
-                        if (curSettings.voiceURI) { 
-                            const v = synth.getVoices().find(x => x.voiceURI === curSettings.voiceURI); 
-                            if(v) u.voice = v; 
-                        }
-                        
-                        const relevantPages = [];
-                        let accumulatedLength = 0;
-                        pages.forEach((page, pgIndex) => {
+                    
+                    const relevantPages = [];
+                    let accumulatedLength = 0;
+                    pages.forEach((page, pgIndex) => {
                              const segment = page.find(item => item.index === idx);
                              if (segment) {
                                  relevantPages.push({
@@ -524,46 +532,54 @@
                                  });
                                  accumulatedLength += segment.text.length;
                              }
-                        });
+                    });
 
-                        u.onboundary = (event) => { 
-                            if (event.name === 'sentence' || event.name === 'word') { 
-                                const charIdx = event.charIndex;
-                                setReadingCharIndex(charIdx); 
-                                const target = relevantPages.find(p => charIdx >= p.start && charIdx < p.end);
-                                if (target) {
-                                    setCurrentPage(prev => {
-                                        if (prev !== target.pageIndex) {
-                                            if(contentRef.current) contentRef.current.scrollTop = 0;
-                                            return target.pageIndex;
-                                        }
-                                        return prev;
-                                    });
-                                }
-                            } 
-                        };
-
-                        u.onend = () => { 
-                            if (ttsStateRef.current === 'playing') {
-                                setReadingCharIndex(0); 
-                                speak(idx + 1); 
+                    u.onboundary = (event) => { 
+                        if (event.name === 'sentence' || event.name === 'word') { 
+                            const charIdx = event.charIndex;
+                            setReadingCharIndex(charIdx); 
+                            const target = relevantPages.find(p => charIdx >= p.start && charIdx < p.end);
+                            if (target) {
+                                setCurrentPage(prev => {
+                                    if (prev !== target.pageIndex) {
+                                        if(contentRef.current) contentRef.current.scrollTop = 0;
+                                        return target.pageIndex;
+                                    }
+                                    return prev;
+                                });
                             }
-                        };
-                        u.onerror = (e) => { 
-                            console.error('SpeechSynthesis error:', e);
-                            if (e.error !== 'interrupted' && e.error !== 'canceled') {
-                                if(ttsStateRef.current === 'playing') setTimeout(() => speak(idx+1), 200); 
-                            } 
-                        };
-                        ttsRef.current = u; 
-                        synth.speak(u);
-                    } catch (e) {
-                        console.error('Synth initialization error:', e);
-                        // 如果synth出错，停止TTS
-                        setToastMsg('语音合成失败');
-                        stopTTS();
-                    }
-                }, 50); 
+                        } 
+                    };
+
+                    u.onend = () => { 
+                        if (ttsStateRef.current === 'playing') {
+                            setReadingCharIndex(0); 
+                            speak(idx + 1); 
+                        }
+                    };
+                    u.onerror = (e) => { 
+                        console.error('TTS Playback Error:', e.error);
+                        
+                        // 特别处理安卓WebView常见的权限错误
+                        if (e.error === 'not-allowed' || e.error === 'network') {
+                            setToastMsg("TTS调用失败，请检查系统权限或网络");
+                        }
+
+                        // 忽略正常的取消和中断错误
+                        if (e.error !== 'interrupted' && e.error !== 'canceled') {
+                            if(ttsStateRef.current === 'playing') {
+                                // 遇到未知错误尝试跳过当前段落继续
+                                setTimeout(() => speak(idx+1), 200); 
+                            }
+                        } 
+                    };
+                    ttsRef.current = u; 
+                    synth.speak(u);
+                } catch (e) {
+                    console.error('Synth initialization error:', e);
+                    setToastMsg('语音合成初始化失败');
+                    stopTTS();
+                }
             };
             
             const stopTTS = () => { 
@@ -572,6 +588,21 @@
                 setTtsState('stopped'); 
                 releaseWakeLock(); 
                 if (heartbeatRef.current) clearInterval(heartbeatRef.current); 
+            };
+
+            // 新增：全屏控制辅助函数
+            const toggleFullScreenMode = (enable) => {
+                try {
+                    if (enable) {
+                        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+                            document.documentElement.requestFullscreen().catch(err => console.log('进入全屏失败:', err));
+                        }
+                    } else {
+                        if (document.fullscreenElement && document.exitFullscreen) {
+                            document.exitFullscreen().catch(err => console.log('退出全屏失败:', err));
+                        }
+                    }
+                } catch (e) { console.error(e); }
             };
 
             const toggleTTS = () => { 
@@ -711,8 +742,16 @@
 
             const handleContentClick = () => { 
                 if (!isGestureHandled.current && !showNoteInput) {
-                    if (showMenu) { setShowMenu(false); } 
-                    else { setShowMenu(true); setActiveTab('progress'); }
+                    if (showMenu) { 
+                        // 菜单当前打开 -> 关闭菜单，同时进入全屏（隐藏系统栏）
+                        setShowMenu(false); 
+                        toggleFullScreenMode(true);
+                    } else { 
+                        // 菜单当前关闭 -> 打开菜单，同时退出全屏（显示系统栏）
+                        setShowMenu(true); 
+                        setActiveTab('progress'); 
+                        toggleFullScreenMode(false);
+                    }
                 }
                 isGestureHandled.current = false;
             };
@@ -781,7 +820,7 @@
                 <div className={`flex flex-col h-full relative ${isPaperMode ? 'theme-paper' : (isSepiaMode ? 'theme-sepia' : (isDarkMode ? 'bg-[#121212] text-gray-200' : 'bg-white text-gray-800'))}`}>
                     {/* Top Menu */}
                     <div className={`fixed top-0 inset-x-0 z-20 flex items-center px-4 transition-transform duration-300 ${showMenu ? 'translate-y-0' : '-translate-y-full'} ${menuBgClass} ${menuTextClass} border-b ${menuBorderClass} h-header-h pt-safe-top`}>
-                        <button onClick={() => {stopTTS(); onBack();}} className="p-2 -ml-2"><Icon name="chevron-left" /></button>
+                        <button onClick={() => {stopTTS(); toggleFullScreenMode(false); onBack();}} className="p-2 -ml-2"><Icon name="chevron-left" /></button>
                         <span className="flex-1 text-center text-sm font-bold truncate px-2 opacity-80">{book.title}</span>
                         <div className="flex items-center gap-2 -mr-2">
                             <button onClick={() => { setQuoteText(''); setNoteText(''); setShowNoteInput(true); }} className="p-2"><Icon name="edit-3" /></button>
@@ -817,7 +856,7 @@
                     {!showMenu && (
                         <>
                             <div className="fixed text-xs font-medium opacity-40 truncate max-w-[80%] pointer-events-none" 
-                                 style={{ top: 'max(12px, env(safe-area-inset-top))', left: settings.pageMargin, color: 'inherit' }}>
+                                 style={{ top: 'max(24px, calc(env(safe-area-inset-top) + 12px))', left: settings.pageMargin, color: 'inherit' }}>
                                 {currentChapterNum || book.title}
                             </div>
                             <div className="fixed bottom-3 text-xs font-medium opacity-40 pointer-events-none" 
