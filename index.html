@@ -257,6 +257,9 @@
             const longPressTimer = useRef(null); 
             const silentAudioRef = useRef(null); 
             
+            // 【新增】使用 Ref 同步追踪当前朗读段落的索引，解决 React 状态异步更新导致的乱跳问题
+            const playingIndexRef = useRef(-1);
+
             // Touch state refs
             const touchStartX = useRef(0);
             const touchStartY = useRef(0);
@@ -465,20 +468,30 @@
                 }
             }, [ttsState, book]);
 
-            // ------ 朗读核心逻辑梳理 ------
+            // ------ 朗读核心逻辑梳理 (重构版 v2) ------
 
             const handleSpeechEnd = () => {
                 if (ttsStateRef.current === 'playing') {
                     setReadingCharIndex(0); 
-                    const currentIdx = book.progressIndex || 0;
-                    speak(currentIdx + 1, 0); 
+                    // 【核心修复】直接使用 Ref 中记录的准确索引 + 1，不再依赖可能滞后的 book.progressIndex
+                    const nextIdx = playingIndexRef.current + 1;
+                    speak(nextIdx, 0); 
                 }
             };
 
             const speak = (idx, startOffset = 0) => {
                 if (ttsStateRef.current !== 'playing') return; 
-                if (idx >= book.content.length) { setTtsState('stopped'); return; }
                 
+                // 边界检查
+                if (idx >= book.content.length) { 
+                    setTtsState('stopped'); 
+                    return; 
+                }
+                
+                // 【核心修复】立即更新 Ref，确保任何时刻我们都知道正在读哪一段
+                playingIndexRef.current = idx;
+
+                // 页面跳转逻辑：只有当目标段落完全不在当前页面时才跳转
                 const currentP = pages[currentPage];
                 const isParaOnCurrentPage = currentP && currentP.some(i => i.index === idx);
 
@@ -507,14 +520,42 @@
                 const speechRate = settingsRef.current.speechRate;
                 const voiceURI = settingsRef.current.voiceURI;
 
+                // --- 引擎调用分支 ---
+
+                // Branch A: Android App WebView Bridge (修复版)
                 if (window.AndroidTTS) {
                     try {
+                        // 清除之前的看门狗计时器
+                        if (timerRef.current) clearTimeout(timerRef.current);
+
+                        // 【关键修复】优先注册回调函数，这是解决长时间停顿的唯一正解
+                        // 很多 Android 壳浏览器支持直接覆盖 onEnd 方法
+                        window.AndroidTTS.onEnd = () => {
+                            // 收到原生回调，立即清除看门狗，并执行下一段
+                            if (timerRef.current) clearTimeout(timerRef.current);
+                            handleSpeechEnd();
+                        };
+
+                        // 可选：注册错误回调
+                        if (window.AndroidTTS.onError) {
+                            window.AndroidTTS.onError = (err) => {
+                                console.error("AndroidTTS Error:", err);
+                                // 出错也尝试跳过
+                                if (timerRef.current) clearTimeout(timerRef.current);
+                                setTimeout(() => speak(idx + 1, 0), 500);
+                            };
+                        }
+
+                        // 调用朗读
                         window.AndroidTTS.speak(textToSpeak, { rate: speechRate, voiceURI: voiceURI });
                         
-                        const estimatedDuration = (textToSpeak.length * 0.4 * (1 / speechRate) * 1000) + 1500; 
+                        // 【双保险】设置一个非常宽松的看门狗计时器
+                        // 仅当 onEnd 回调失效时（比如APP切换到后台），才由计时器兜底触发翻页
+                        // 计算方式：预估时间 + 5秒冗余，确保正常朗读时绝不会触发它
+                        const estimatedDuration = (textToSpeak.length * 0.3 * (1 / speechRate) * 1000) + 5000; 
                         
-                        if (timerRef.current) clearTimeout(timerRef.current);
                         timerRef.current = setTimeout(() => {
+                            console.warn("AndroidTTS onEnd timeout, forcing next.");
                             handleSpeechEnd();
                         }, estimatedDuration);
 
@@ -524,6 +565,7 @@
                         else { setToastMsg('语音合成不可用'); stopTTS(); }
                     }
                 } 
+                // Branch B: Standard Web Speech API
                 else if (synth) {
                     engineSpeakWeb(idx, textToSpeak, startOffset);
                 } else {
@@ -601,7 +643,11 @@
             };
             
             const stopTTS = () => { 
-                if (window.AndroidTTS) window.AndroidTTS.stop();
+                if (window.AndroidTTS) {
+                    // 尝试停止并清空回调，防止后续触发
+                    if(window.AndroidTTS.stop) window.AndroidTTS.stop();
+                    window.AndroidTTS.onEnd = null;
+                }
                 if (synth) synth.cancel(); 
                 if (timerRef.current) clearTimeout(timerRef.current); 
                 setTtsState('stopped'); 
@@ -627,7 +673,9 @@
                 if (ttsState === 'playing') { 
                     stopTTS();
                 } else { 
-                    if (window.AndroidTTS) window.AndroidTTS.stop();
+                    if (window.AndroidTTS) {
+                        if(window.AndroidTTS.stop) window.AndroidTTS.stop();
+                    }
                     if (synth) synth.cancel();
                     if (timerRef.current) clearTimeout(timerRef.current);
                     
