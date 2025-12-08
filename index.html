@@ -47,14 +47,20 @@
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         html { -webkit-tap-highlight-color: transparent; }
         
-        .reading-active-light { background-color: rgba(10, 132, 255, 0.1); color: #000; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-        .reading-active-dark { background-color: rgba(255, 255, 255, 0.08); color: #fff; border-radius: 4px; }
+        .reading-active-light { background-color: rgba(10, 132, 255, 0.15); color: #000; border-radius: 2px; }
+        .reading-active-dark { background-color: rgba(255, 255, 255, 0.15); color: #fff; border-radius: 2px; }
 
-        .sentence-active { text-decoration: underline; text-decoration-style: dotted; text-decoration-thickness: 1px; text-underline-offset: 5px; }
-        .light .sentence-active { text-decoration-color: rgba(10, 132, 255, 0.6); }
-        .dark .sentence-active { text-decoration-color: rgba(100, 210, 255, 0.6); }
+        /* 句级下划线样式 - 虚线 */
+        .sentence-highlight { 
+            text-decoration: underline; 
+            text-decoration-style: dotted; 
+            text-decoration-thickness: 2px; 
+            text-underline-offset: 4px; 
+        }
+        .light .sentence-highlight { text-decoration-color: #0a84ff; background-color: rgba(10, 132, 255, 0.1); }
+        .dark .sentence-highlight { text-decoration-color: #64d2ff; background-color: rgba(100, 210, 255, 0.15); }
         
-        .read-past { opacity: 0.4; filter: grayscale(0.8); transition: opacity 0.5s ease; }
+        .read-past { opacity: 0.6; }
         
         .label-justify {
             text-align: left;
@@ -237,14 +243,15 @@
             const [countdown, setCountdown] = useState(null); 
             const [toastMsg, setToastMsg] = useState(null);
             const [availableVoices, setAvailableVoices] = useState([]); 
-            const [readingCharIndex, setReadingCharIndex] = useState(0); 
             const [customTimerInput, setCustomTimerInput] = useState(false); 
             const [customMinutes, setCustomMinutes] = useState('');
             const [wakeLock, setWakeLock] = useState(null); 
             const [manualNavigation, setManualNavigation] = useState(false); 
             
+            // 朗读相关状态
             const [currentPage, setCurrentPage] = useState(0);
             const [ttsState, setTtsState] = useState('stopped');
+            const [currentSentence, setCurrentSentence] = useState(null); // { paraIdx, start, end }
             const [startTime] = useState(Date.now());
             
             const synth = window.speechSynthesis;
@@ -254,13 +261,13 @@
             const settingsRef = useRef(settings);
             const heartbeatRef = useRef(null);
             const timerRef = useRef(null); 
-            // 新增：用于安卓模拟进度的定时器引用
-            const simulationRef = useRef(null); 
+            const simulationRef = useRef(null); // 模拟进度定时器
             const longPressTimer = useRef(null); 
             const silentAudioRef = useRef(null); 
             
-            // 【新增】使用 Ref 同步追踪当前朗读段落的索引
-            const playingIndexRef = useRef(-1);
+            // 播放队列 Ref
+            const playQueueRef = useRef([]); // [{ text, paraIdx, start, end }]
+            const playQueueIndexRef = useRef(0);
 
             // Touch state refs
             const touchStartX = useRef(0);
@@ -293,26 +300,28 @@
 
             const splitSentences = (text) => {
                 const sentences = []; let current = ''; let startIndex = 0;
-                for (let i = 0; i < text.length; i++) { const char = text[i]; current += char; if (/[.!?。！？\n]/.test(char) || i === text.length - 1) { sentences.push({ text: current, start: startIndex, end: startIndex + current.length }); startIndex += current.length; current = ''; } }
+                for (let i = 0; i < text.length; i++) { 
+                    const char = text[i]; 
+                    current += char; 
+                    if (/[.!?。！？\n]/.test(char) || i === text.length - 1) { 
+                        sentences.push({ text: current, start: startIndex, end: startIndex + current.length }); 
+                        startIndex += current.length; 
+                        current = ''; 
+                    } 
+                }
                 return sentences;
             };
+            
             const chapters = useMemo(() => { if (book.chapters && book.chapters.length > 0) return book.chapters; return detectChapters(book.content); }, [book]);
             useEffect(() => { ttsStateRef.current = ttsState; }, [ttsState]);
             useEffect(() => { settingsRef.current = settings; }, [settings]);
             
-            // 修复：增强的语音列表加载逻辑，解决安卓WebView无法获取音色的问题
             const loadVoices = useCallback(() => {
                 if (!synth) return;
-                
                 let allVoices = synth.getVoices();
                 if (!allVoices || allVoices.length === 0) return;
-
                 let voices = allVoices.filter(v => v.lang.includes('zh') || v.lang.includes('cmn') || v.name.includes('Chinese') || v.name.includes('China'));
-                
-                if (voices.length === 0 && allVoices.length > 0) {
-                    voices = allVoices;
-                }
-
+                if (voices.length === 0 && allVoices.length > 0) voices = allVoices;
                 voices.sort((a, b) => {
                     const aIsGoogle = a.name.toLowerCase().includes('google');
                     const bIsGoogle = b.name.toLowerCase().includes('google');
@@ -320,93 +329,57 @@
                     if (!aIsGoogle && bIsGoogle) return 1;
                     return 0;
                 });
-                
                 const defaultOption = { name: "系统默认 (自动选择)", voiceURI: "" };
-                
                 setAvailableVoices(prev => {
-                    if (prev.length === voices.length + 1 && prev[1]?.voiceURI === voices[0]?.voiceURI) {
-                        return prev;
-                    }
+                    if (prev.length === voices.length + 1 && prev[1]?.voiceURI === voices[0]?.voiceURI) return prev;
                     return [defaultOption, ...voices];
                 });
             }, [synth]);
 
             useEffect(() => { 
                 loadVoices();
-                if (synth && synth.onvoiceschanged !== undefined) {
-                    synth.onvoiceschanged = loadVoices;
-                }
+                if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = loadVoices;
                 const timer = setInterval(loadVoices, 500);
                 const stopTimer = setTimeout(() => clearInterval(timer), 5000);
-                return () => { 
-                    clearInterval(timer); 
-                    clearTimeout(stopTimer);
-                }; 
+                return () => { clearInterval(timer); clearTimeout(stopTimer); }; 
             }, [loadVoices, synth]);
 
             useEffect(() => {
                 silentAudioRef.current = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
                 silentAudioRef.current.loop = true;
-
-                return () => {
-                    if (silentAudioRef.current) {
-                        silentAudioRef.current.pause();
-                        silentAudioRef.current = null;
-                    }
-                };
+                return () => { if (silentAudioRef.current) { silentAudioRef.current.pause(); silentAudioRef.current = null; } };
             }, []);
 
             const requestWakeLock = async () => {
                 if ('wakeLock' in navigator) {
-                    try {
-                        const lock = await navigator.wakeLock.request('screen');
-                        setWakeLock(lock);
-                    } catch (err) { console.log('Wake Lock Error:', err); }
+                    try { const lock = await navigator.wakeLock.request('screen'); setWakeLock(lock); } catch (err) { console.log('Wake Lock Error:', err); }
                 }
             };
             const releaseWakeLock = async () => {
                 if (wakeLock) {
-                    try { await wakeLock.release(); setWakeLock(null); } 
-                    catch (err) { console.log('Wake Lock Release Error:', err); }
+                    try { await wakeLock.release(); setWakeLock(null); } catch (err) { console.log('Wake Lock Release Error:', err); }
                 }
             };
             
-            // 优化分页逻辑：记录 offset
             const pages = useMemo(() => {
                 const containerWidth = window.innerWidth - (settings.pageMargin * 2); 
                 const charsPerLine = Math.floor(containerWidth / settings.fontSize);
                 const linesPerPage = settings.linesPerPage;
-                const result = []; 
-                let page = []; 
-                let currentLines = 0; 
-
+                const result = []; let page = []; let currentLines = 0; 
                 const chapterIndices = new Set(book.chapters ? book.chapters.map(c => c.index) : []);
 
                 book.content.forEach((txt, idx) => {
                     const text = txt.replace(/^\s+/, ''); 
                     if (text.length === 0) return; 
-                    
                     const isChapterStart = chapterIndices.has(idx);
-                    if (isChapterStart && page.length > 0) { 
-                        result.push(page); 
-                        page = []; 
-                        currentLines = 0; 
-                    }
+                    if (isChapterStart && page.length > 0) { result.push(page); page = []; currentLines = 0; }
 
                     const textLines = Math.ceil(text.length / charsPerLine);
-                    let remainingText = text;
-                    let remainingLinesInPara = textLines;
-                    let currentOffset = 0; 
+                    let remainingText = text; let remainingLinesInPara = textLines; let currentOffset = 0; 
 
                     while (remainingText.length > 0) {
                         const linesLeftOnPage = linesPerPage - currentLines;
-                        
-                        if (linesLeftOnPage <= 0) {
-                             result.push(page);
-                             page = [];
-                             currentLines = 0;
-                             continue;
-                        }
+                        if (linesLeftOnPage <= 0) { result.push(page); page = []; currentLines = 0; continue; }
 
                         if (remainingLinesInPara <= linesLeftOnPage) {
                             page.push({ text: remainingText, index: idx, offset: currentOffset, split: false });
@@ -416,21 +389,13 @@
                         } else {
                             let linesToTake = linesLeftOnPage;
                             if (linesToTake < 1) linesToTake = 1;
-                            
                             let cutIdx = Math.floor(linesToTake * charsPerLine);
                             if (cutIdx > remainingText.length) cutIdx = remainingText.length;
-
                             const chunk = remainingText.substring(0, cutIdx);
                             page.push({ text: chunk, index: idx, offset: currentOffset, split: true });
-                            
                             currentOffset += chunk.length; 
-
-                            result.push(page);
-                            page = [];
-                            currentLines = 0;
-                            
-                            remainingText = remainingText.substring(cutIdx);
-                            remainingLinesInPara -= linesToTake;
+                            result.push(page); page = []; currentLines = 0;
+                            remainingText = remainingText.substring(cutIdx); remainingLinesInPara -= linesToTake;
                         }
                     }
                 });
@@ -445,432 +410,275 @@
             useEffect(() => { if (autoPlayOnMount) setTimeout(() => toggleTTS(), 500); }, []);
             useEffect(() => { const timer = setInterval(() => { updateProgress(book.id, { addTime: 1 }); }, 60000); return () => { clearInterval(timer); if (synth) synth.cancel(); }; }, []);
             useEffect(() => {
-                if (timerMinutes) { 
-                    setCountdown(timerMinutes * 60); 
-                    if (timerRef.current) clearInterval(timerRef.current); 
-                    timerRef.current = setInterval(() => { 
-                        setCountdown(prev => { 
-                            if (prev <= 1) { 
-                                clearInterval(timerRef.current); 
-                                setTimerMinutes(null); 
-                                if (ttsStateRef.current === 'playing') { 
-                                    stopTTS(); 
-                                    setToastMsg("定时结束，已停止朗读"); 
-                                    setTimeout(()=>setToastMsg(null), 3000); 
-                                } 
-                                return 0; 
-                            } 
-                            return prev - 1; 
-                        }); 
-                    }, 1000); 
-                } else { 
-                    if (timerRef.current) clearInterval(timerRef.current); 
-                    setCountdown(null); 
-                }
+                if (timerMinutes) { setCountdown(timerMinutes * 60); if (timerRef.current) clearInterval(timerRef.current); timerRef.current = setInterval(() => { setCountdown(prev => { if (prev <= 1) { clearInterval(timerRef.current); setTimerMinutes(null); if (ttsStateRef.current === 'playing') { stopTTS(); setToastMsg("定时结束，已停止朗读"); setTimeout(()=>setToastMsg(null), 3000); } return 0; } return prev - 1; }); }, 1000); } 
+                else { if (timerRef.current) clearInterval(timerRef.current); setCountdown(null); }
                 return () => { if (timerRef.current) clearInterval(timerRef.current); };
             }, [timerMinutes]);
 
-            // Handle Silent Audio Playback for Background Mode
             useEffect(() => {
                 if (ttsState === 'playing') {
-                    // Play silent audio to keep background alive
                     silentAudioRef.current?.play().catch(e => console.log("Silent Audio Error:", e));
-                    
                     if ('mediaSession' in navigator) {
                         navigator.mediaSession.playbackState = 'playing';
-                        navigator.mediaSession.metadata = new MediaMetadata({
-                            title: book.title,
-                            artist: book.author || 'LiteReader',
-                            album: '正在朗读',
-                            artwork: [{ src: 'https://cdn-icons-png.flaticon.com/512/3389/3389081.png', sizes: '512x512', type: 'image/png' }]
-                        });
+                        navigator.mediaSession.metadata = new MediaMetadata({ title: book.title, artist: book.author || 'LiteReader', album: '正在朗读', artwork: [{ src: 'https://cdn-icons-png.flaticon.com/512/3389/3389081.png', sizes: '512x512', type: 'image/png' }] });
                     }
                 } else {
                     silentAudioRef.current?.pause();
-                    if ('mediaSession' in navigator) {
-                        navigator.mediaSession.playbackState = 'paused';
-                    }
+                    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
                 }
             }, [ttsState, book]);
 
-            // ------ 朗读核心逻辑梳理 (重构版 v3 - 增加安卓模拟引擎) ------
+            // --- 核心朗读重构 (Point & Read) ---
 
-            const handleSpeechEnd = () => {
-                if (ttsStateRef.current === 'playing') {
-                    setReadingCharIndex(0); 
-                    const nextIdx = playingIndexRef.current + 1;
-                    speak(nextIdx, 0); 
-                }
+            // 生成当前页面的播放队列（句级）
+            const generatePageQueue = (pageIndex) => {
+                if (!pages[pageIndex]) return [];
+                const queue = [];
+                pages[pageIndex].forEach(item => {
+                    // item 是页面上的一个段落片段 { text, index, offset }
+                    // 我们把它切分为句子，并加上全局坐标
+                    const sentences = splitSentences(item.text);
+                    sentences.forEach(s => {
+                        queue.push({
+                            text: s.text,
+                            paraIdx: item.index,
+                            start: item.offset + s.start,
+                            end: item.offset + s.end
+                        });
+                    });
+                });
+                return queue;
             };
 
-            // 【优化】估算朗读时长 (毫秒) - 激进紧凑版
-            // 用户反馈：不要停顿那么久，识别到句号直接读下一段
             const estimateDuration = (text, rate) => {
-                let cjkCount = 0;       // 中日韩字符
-                let latinCount = 0;     // 拉丁字符/数字
-                let weakPauseCount = 0; // 弱停顿
-                let strongPauseCount = 0; // 强停顿
-
-                for (let char of text) {
-                    if (/[\u4e00-\u9fa5]/.test(char)) {
-                        cjkCount++;
-                    } else if (/[a-zA-Z0-9]/.test(char)) {
-                        latinCount++;
-                    } else if (/[,，、;；]/.test(char)) {
-                        weakPauseCount++;
-                    } else if (/[.。!！?？\n\r]/.test(char)) {
-                        strongPauseCount++;
-                    }
-                }
-
-                // 激进经验值 (毫秒) - 宁可快一点切，也不要让用户等
-                const timePerCJK = 220;      // 提速：260 -> 220ms
-                const timePerLatin = 60;     // 提速：70 -> 60ms
-                const timeWeakPause = 50;    // 大幅减少逗号停顿：300 -> 50ms
-                const timeStrongPause = 300; // 大幅减少句号停顿：800 -> 300ms (读完就切，不留回味时间)
-
-                const totalBaseTime = (cjkCount * timePerCJK) 
-                                    + (latinCount * timePerLatin) 
-                                    + (weakPauseCount * timeWeakPause) 
-                                    + (strongPauseCount * timeStrongPause);
-                
-                // 移除所有固定缓冲 (buffer = 0)
-                // 之前的 +500ms 是造成"读完发呆"的主要原因
-                return totalBaseTime * (1 / rate);
+                let cjkCount = 0; let latinCount = 0;
+                for (let char of text) { if (/[\u4e00-\u9fa5]/.test(char)) cjkCount++; else latinCount++; }
+                const baseTime = (cjkCount * 220) + (latinCount * 60) + 200; // 稍快一点的基准
+                return baseTime * (1 / rate);
             };
 
-            const speak = (idx, startOffset = 0) => {
-                if (ttsStateRef.current !== 'playing') return; 
-                
-                if (idx >= book.content.length) { 
-                    setTtsState('stopped'); 
-                    return; 
-                }
-                
-                playingIndexRef.current = idx;
+            // 播放队列中的下一句
+            const playNextSentence = () => {
+                if (ttsStateRef.current !== 'playing') return;
 
-                const currentP = pages[currentPage];
-                const isParaOnCurrentPage = currentP && currentP.some(i => i.index === idx);
+                const queue = playQueueRef.current;
+                const idx = playQueueIndexRef.current;
 
-                if (!isParaOnCurrentPage) {
-                    const pIdx = pages.findIndex(pg => pg.some(i => i.index === idx));
-                    if (pIdx !== -1 && pIdx !== currentPage) { 
-                        setCurrentPage(pIdx); 
-                        if(contentRef.current) contentRef.current.scrollTop = 0; 
+                // 1. 本页读完了 -> 翻到下一页
+                if (idx >= queue.length) {
+                    const nextPage = currentPage + 1;
+                    if (nextPage < pages.length) {
+                        setCurrentPage(nextPage); // 翻页
+                        if(contentRef.current) contentRef.current.scrollTop = 0;
+                        
+                        // 准备新页面的队列
+                        const newQueue = generatePageQueue(nextPage);
+                        if (newQueue.length > 0) {
+                            playQueueRef.current = newQueue;
+                            playQueueIndexRef.current = 0;
+                            // 稍微延迟一下等待渲染（虽然React State是异步的，但数据模型pages是同步的）
+                            setTimeout(playNextSentence, 50); 
+                        } else {
+                            // 空页面？继续下一页
+                            playQueueIndexRef.current = 0; // 重置防止溢出
+                            setTimeout(playNextSentence, 50); 
+                        }
+                    } else {
+                        setToastMsg("已读完最后一页");
+                        stopTTS();
                     }
-                }
-                
-                updateProgress(book.id, { progressIndex: idx });
-
-                const rawText = book.content[idx];
-                let textToSpeak = rawText ? rawText.replace(/^\s+/, '') : '';
-                
-                if (startOffset > 0 && startOffset < textToSpeak.length) {
-                    textToSpeak = textToSpeak.substring(startOffset);
-                }
-                
-                if (!textToSpeak || textToSpeak.trim().length === 0) {
-                    setTimeout(() => speak(idx + 1, 0), 50);
                     return;
                 }
 
+                // 2. 播放当前句子
+                const currentItem = queue[idx];
+                
+                // 更新高亮状态
+                setCurrentSentence({
+                    paraIdx: currentItem.paraIdx,
+                    start: currentItem.start,
+                    end: currentItem.end
+                });
+                
+                // 更新阅读进度记录（记录段落即可）
+                updateProgress(book.id, { progressIndex: currentItem.paraIdx });
+
+                const textToSpeak = currentItem.text;
                 const speechRate = settingsRef.current.speechRate;
                 const voiceURI = settingsRef.current.voiceURI;
 
-                // --- 引擎调用分支 ---
-
-                // Branch A: Android App WebView Bridge (模拟进度版)
+                // --- 引擎调用 ---
                 if (window.AndroidTTS) {
                     try {
                         if (simulationRef.current) clearInterval(simulationRef.current);
                         if (timerRef.current) clearTimeout(timerRef.current);
 
-                        // 1. 调用原生朗读
-                        // 注意：这里我们不再依赖原生的 onEnd 回调，因为它太不可靠
                         window.AndroidTTS.speak(textToSpeak, { rate: speechRate, voiceURI: voiceURI });
-                        
-                        // 2. 启动模拟引擎 (Simulated Engine)
-                        // 计算这段话大概要读多久
+
+                        // 安卓双保险：回调 + 估算看门狗
+                        let finished = false;
+                        const finish = () => {
+                            if (finished) return;
+                            finished = true;
+                            if (simulationRef.current) clearInterval(simulationRef.current);
+                            if (timerRef.current) clearTimeout(timerRef.current);
+                            
+                            playQueueIndexRef.current += 1; // 准备下一句
+                            playNextSentence();
+                        };
+
+                        window.AndroidTTS.onEnd = finish;
+                        if (window.AndroidTTS.onError) window.AndroidTTS.onError = finish;
+
+                        // 估算时长作为兜底
                         const duration = estimateDuration(textToSpeak, speechRate);
-                        const startTime = Date.now();
-                        const updateInterval = 100; // 每100ms更新一次进度
-
-                        simulationRef.current = setInterval(() => {
-                            if (ttsStateRef.current !== 'playing') {
-                                clearInterval(simulationRef.current);
-                                return;
-                            }
-
-                            const elapsed = Date.now() - startTime;
-                            const progress = Math.min(1, elapsed / duration);
-                            
-                            // 模拟当前的字符位置，让下划线动起来！
-                            // 这里的 charIdx 是相对于 textToSpeak 的
-                            const charIdx = Math.floor(progress * textToSpeak.length);
-                            
-                            // 更新高亮位置 (加上 startOffset 是为了对应整段文本的全局坐标)
-                            setReadingCharIndex(charIdx + startOffset);
-
-                            // 模拟读完了
-                            if (elapsed >= duration) {
-                                clearInterval(simulationRef.current);
-                                handleSpeechEnd(); // 自动下一段
-                            }
-                        }, updateInterval);
+                        timerRef.current = setTimeout(finish, duration + 3000); // 3秒冗余
 
                     } catch (e) {
                         console.error('AndroidTTS error:', e);
-                        if (synth) engineSpeakWeb(idx, textToSpeak, startOffset); 
-                        else { setToastMsg('语音合成不可用'); stopTTS(); }
+                        playQueueIndexRef.current += 1;
+                        playNextSentence();
                     }
-                } 
-                // Branch B: Standard Web Speech API
-                else if (synth) {
-                    engineSpeakWeb(idx, textToSpeak, startOffset);
-                } else {
-                    setToastMsg('语音合成不可用');
-                    stopTTS();
-                }
-            };
-
-            const engineSpeakWeb = (idx, textToSpeak, startOffset) => {
-                if (!synth) return;
-                synth.cancel(); 
-
-                try {
-                    const u = new SpeechSynthesisUtterance(textToSpeak); 
-                    window.currentUtterance = u; 
-                    const curSettings = settingsRef.current; 
-                    u.rate = curSettings.speechRate;
-                    
-                    if (curSettings.voiceURI) { 
-                        const v = synth.getVoices().find(x => x.voiceURI === curSettings.voiceURI); 
-                        if(v) u.voice = v; 
+                } else if (synth) {
+                    synth.cancel();
+                    const u = new SpeechSynthesisUtterance(textToSpeak);
+                    u.rate = speechRate;
+                    if (settingsRef.current.voiceURI) {
+                        const v = synth.getVoices().find(x => x.voiceURI === settingsRef.current.voiceURI);
+                        if (v) u.voice = v;
                     }
-                    
-                    const relevantPages = [];
-                    pages.forEach((page, pgIndex) => {
-                         page.forEach(item => {
-                             if (item.index === idx) {
-                                 relevantPages.push({
-                                     pageIndex: pgIndex,
-                                     start: item.offset,
-                                     end: item.offset + item.text.length
-                                 });
-                             }
-                         });
-                    });
-
-                    u.onboundary = (event) => { 
-                        if (event.name === 'sentence' || event.name === 'word') { 
-                            const charIdx = event.charIndex + startOffset;
-                            setReadingCharIndex(charIdx); 
-                            
-                            const target = relevantPages.find(p => charIdx >= p.start && charIdx < p.end);
-                            if (target) {
-                                setCurrentPage(prev => {
-                                    if (prev !== target.pageIndex) {
-                                        if(contentRef.current) contentRef.current.scrollTop = 0;
-                                        return target.pageIndex;
-                                    }
-                                    return prev;
-                                });
-                            }
-                        } 
-                    };
-
-                    u.onend = handleSpeechEnd;
-                    
-                    u.onerror = (e) => { 
-                        if (e.error === 'interrupted' || e.error === 'canceled') return;
-                        // ... existing error handling ...
-                        if(ttsStateRef.current === 'playing') {
-                            setTimeout(() => speak(idx+1, 0), 200); 
+                    u.onend = () => {
+                        if (ttsStateRef.current === 'playing') {
+                            playQueueIndexRef.current += 1;
+                            playNextSentence();
                         }
                     };
-                    
-                    ttsRef.current = u; 
+                    u.onerror = (e) => {
+                        if (e.error !== 'interrupted' && e.error !== 'canceled') {
+                            playQueueIndexRef.current += 1;
+                            playNextSentence();
+                        }
+                    };
                     synth.speak(u);
-                } catch (e) {
-                    // ... existing error handling ...
-                    stopTTS();
                 }
             };
-            
+
             const stopTTS = () => { 
-                if (window.AndroidTTS) {
-                    if(window.AndroidTTS.stop) window.AndroidTTS.stop();
-                }
+                if (window.AndroidTTS) { if(window.AndroidTTS.stop) window.AndroidTTS.stop(); window.AndroidTTS.onEnd = null; }
                 if (synth) synth.cancel(); 
-                
-                // 清除所有计时器和模拟器
                 if (timerRef.current) clearTimeout(timerRef.current); 
                 if (simulationRef.current) clearInterval(simulationRef.current);
-                
                 setTtsState('stopped'); 
+                setCurrentSentence(null); // 清除高亮
                 releaseWakeLock(); 
                 if (heartbeatRef.current) clearInterval(heartbeatRef.current); 
             };
 
             const toggleFullScreenMode = (enable) => {
                 try {
-                    if (enable) {
-                        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
-                            document.documentElement.requestFullscreen().catch(err => console.log('进入全屏失败:', err));
-                        }
-                    } else {
-                        if (document.fullscreenElement && document.exitFullscreen) {
-                            document.exitFullscreen().catch(err => console.log('退出全屏失败:', err));
-                        }
-                    }
-                } catch (e) { console.error(e); }
+                    if (enable) { if (!document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(e=>{}); }
+                    else { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(e=>{}); }
+                } catch (e) {}
             };
 
             const toggleTTS = () => { 
                 if (ttsState === 'playing') { 
                     stopTTS();
                 } else { 
-                    // 先停止一切
-                    if (window.AndroidTTS) {
-                        if(window.AndroidTTS.stop) window.AndroidTTS.stop();
-                    }
-                    if (synth) synth.cancel();
-                    
-                    // 清除之前的模拟器
-                    if (timerRef.current) clearTimeout(timerRef.current);
-                    if (simulationRef.current) clearInterval(simulationRef.current);
+                    stopTTS(); // 确保先停止
                     
                     setTtsState('playing'); 
                     ttsStateRef.current = 'playing'; 
                     requestWakeLock(); 
                     
-                    // ... existing start logic ...
-                    const currentP = pages[currentPage]; 
+                    // 指哪读哪：从当前页面开始，重新构建队列
+                    const queue = generatePageQueue(currentPage);
+                    playQueueRef.current = queue;
+                    playQueueIndexRef.current = 0; // 从第一句开始
                     
-                    let startIdx;
-                    let startOffset = 0;
-
-                    if (currentP && currentP.length > 0) {
-                        const firstItem = currentP[0];
-                        startIdx = firstItem.index;
-                        startOffset = firstItem.offset || 0;
-                        setManualNavigation(false);
-                    } else {
-                        startIdx = (book.progressIndex || 0);
-                    }
-                    
-                    speak(startIdx, startOffset); 
+                    playNextSentence(); 
                 } 
             };
+
+            // 监听翻页事件：如果在朗读中翻页，则重置队列从新页开始读
+            useEffect(() => {
+                if (ttsState === 'playing' && manualNavigation) {
+                    stopTTS(); // 先停，避免声音重叠
+                    // 重新开始逻辑
+                    setTimeout(() => {
+                        setTtsState('playing');
+                        ttsStateRef.current = 'playing';
+                        const queue = generatePageQueue(currentPage);
+                        playQueueRef.current = queue;
+                        playQueueIndexRef.current = 0;
+                        setManualNavigation(false);
+                        playNextSentence();
+                    }, 100);
+                }
+            }, [currentPage, manualNavigation]); 
 
             // Bind Media Session Handlers
             useEffect(() => {
                 if (!('mediaSession' in navigator)) return;
-
                 const handleNext = () => {
                     const next = Math.min(Math.max(0, currentPage + 1), totalPages - 1);
                     setCurrentPage(next);
-                    if (contentRef.current) contentRef.current.scrollTop = 0;
-                    if (ttsStateRef.current === 'playing') {
-                        stopTTS(); 
-                        const firstItem = pages[next][0];
-                        speak(firstItem.index, firstItem.offset || 0); 
-                    } else {
-                        updateProgress(book.id, { progressIndex: pages[next][0].index });
-                    }
+                    setManualNavigation(true);
                 };
-                
                 const handlePrev = () => {
                     const prev = Math.min(Math.max(0, currentPage - 1), totalPages - 1);
                     setCurrentPage(prev);
-                    if (contentRef.current) contentRef.current.scrollTop = 0;
-                    if (ttsStateRef.current === 'playing') {
-                        stopTTS(); 
-                        const firstItem = pages[prev][0];
-                        speak(firstItem.index, firstItem.offset || 0); 
-                    } else {
-                        updateProgress(book.id, { progressIndex: pages[prev][0].index });
-                    }
+                    setManualNavigation(true);
                 };
-
-                navigator.mediaSession.setActionHandler('play', () => { if(ttsStateRef.current !== 'playing') toggleTTS(); });
-                navigator.mediaSession.setActionHandler('pause', () => { if(ttsStateRef.current === 'playing') toggleTTS(); });
+                navigator.mediaSession.setActionHandler('play', toggleTTS);
+                navigator.mediaSession.setActionHandler('pause', toggleTTS);
                 navigator.mediaSession.setActionHandler('previoustrack', handlePrev);
                 navigator.mediaSession.setActionHandler('nexttrack', handleNext);
-                navigator.mediaSession.setActionHandler('stop', () => stopTTS());
-
-            }, [currentPage, pages, totalPages, toggleTTS]); 
+                navigator.mediaSession.setActionHandler('stop', stopTTS);
+            }, [currentPage, totalPages, toggleTTS]); 
 
             const handleParaClick = (idx) => { 
-                if (ttsState === 'playing') { updateProgress(book.id, { progressIndex: idx }); stopTTS(); setTtsState('playing'); ttsStateRef.current = 'playing'; setTimeout(() => speak(idx, 0), 50); }
+                // 点击段落 -> 跳转并朗读 (可选)
+                const pIdx = pages.findIndex(pg => pg.some(i => i.index === idx));
+                if (pIdx !== -1) {
+                    setCurrentPage(pIdx);
+                    if (ttsState === 'playing') {
+                        setManualNavigation(true); // 触发重读逻辑
+                    }
+                }
             };
 
             const handleTouchStart = (e) => {
                 if (!e || !e.touches || e.touches.length === 0) return;
-                
                 touchStartX.current = e.touches[0].clientX;
                 touchStartY.current = e.touches[0].clientY;
                 isSwiping.current = false;
                 isGestureHandled.current = false;
-
-                let targetText = "";
-                let target = e.target;
-                while (target && target !== contentRef.current) {
-                    if (target.tagName === 'P') {
-                        targetText = target.innerText;
-                        break;
-                    }
-                    target = target.parentElement;
-                }
-
+                let targetText = ""; let target = e.target;
+                while (target && target !== contentRef.current) { if (target.tagName === 'P') { targetText = target.innerText; break; } target = target.parentElement; }
                 if (targetText) {
                     longPressTimer.current = setTimeout(() => {
-                        if (!isSwiping.current) {
-                            setQuoteText(targetText);
-                            setNoteText('');
-                            setShowNoteInput(true);
-                            isGestureHandled.current = true; 
-                            if (window.navigator && window.navigator.vibrate) {
-                                window.navigator.vibrate(50);
-                            }
-                        }
+                        if (!isSwiping.current) { setQuoteText(targetText); setNoteText(''); setShowNoteInput(true); isGestureHandled.current = true; if (window.navigator && window.navigator.vibrate) window.navigator.vibrate(50); }
                     }, 1200); 
                 }
             };
 
             const handleTouchMove = (e) => {
                  if (!e || !e.touches || e.touches.length === 0) return;
-                 const x = e.touches[0].clientX;
-                 const y = e.touches[0].clientY;
-                 
-                 if (Math.abs(x - touchStartX.current) > 10 || Math.abs(y - touchStartY.current) > 10) {
-                     isSwiping.current = true;
-                     if (longPressTimer.current) {
-                         clearTimeout(longPressTimer.current);
-                         longPressTimer.current = null;
-                     }
-                 }
+                 const x = e.touches[0].clientX; const y = e.touches[0].clientY;
+                 if (Math.abs(x - touchStartX.current) > 10 || Math.abs(y - touchStartY.current) > 10) { isSwiping.current = true; if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; } }
             };
 
             const handleTouchEnd = (e) => {
-                if (longPressTimer.current) {
-                    clearTimeout(longPressTimer.current);
-                    longPressTimer.current = null;
-                }
-
+                if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
                 if (isSwiping.current) {
                     const diffX = e.changedTouches[0].clientX - touchStartX.current;
                     if (Math.abs(diffX) > 50) {
                         const next = Math.min(Math.max(0, currentPage + (diffX > 0 ? -1 : 1)), totalPages - 1);
                         setCurrentPage(next);
-                        if (contentRef.current) contentRef.current.scrollTop = 0;
-                        if (ttsState === 'playing') {
-                             stopTTS(); 
-                             const firstItem = pages[next][0];
-                             speak(firstItem.index, firstItem.offset || 0);
-                        } else {
-                            updateProgress(book.id, { progressIndex: pages[next][0].index });
-                        }
+                        if(contentRef.current) contentRef.current.scrollTop = 0;
+                        if (ttsState === 'playing') setManualNavigation(true); 
+                        else updateProgress(book.id, { progressIndex: pages[next][0].index });
                         isGestureHandled.current = true; 
                     }
                 }
@@ -878,60 +686,27 @@
 
             const handleContentClick = () => { 
                 if (!isGestureHandled.current && !showNoteInput) {
-                    if (showMenu) { 
-                        setShowMenu(false); 
-                        toggleFullScreenMode(true);
-                    } else { 
-                        setShowMenu(true); 
-                        setActiveTab('progress'); 
-                        toggleFullScreenMode(false);
-                    }
+                    if (showMenu) { setShowMenu(false); toggleFullScreenMode(true); } 
+                    else { setShowMenu(true); setActiveTab('progress'); toggleFullScreenMode(false); }
                 }
                 isGestureHandled.current = false;
             };
 
             const jumpToChapter = (idx) => { 
                 const pIdx = pages.findIndex(pg => pg.some(i => i.index >= idx)); 
-                if (pIdx !== -1) { 
-                    setCurrentPage(pIdx); 
-                    updateProgress(book.id, { progressIndex: pages[pIdx][0].index }); 
-                    if(contentRef.current) contentRef.current.scrollTop = 0; 
-                } 
+                if (pIdx !== -1) { setCurrentPage(pIdx); updateProgress(book.id, { progressIndex: pages[pIdx][0].index }); if(contentRef.current) contentRef.current.scrollTop = 0; } 
                 setShowMenu(false); 
             };
 
             const saveNote = () => { 
                 if (!noteText.trim() && !quoteText.trim()) return; 
-                const newNotes = [
-                    ...(book.notes || []), 
-                    { 
-                        id: Date.now(), 
-                        date: Date.now(), 
-                        content: noteText, 
-                        quote: quoteText,
-                        paraIndex: book.progressIndex || 0, 
-                        pageIndex: currentPage,
-                        pageNo: currentPage + 1,
-                        chapter: currentChapterNum
-                    }
-                ]; 
-                updateProgress(book.id, { notes: newNotes }); 
-                setNoteText(''); 
-                setQuoteText('');
-                setShowNoteInput(false); 
-                setToastMsg("笔记已保存"); 
-                setTimeout(() => setToastMsg(null), 2000); 
+                const newNotes = [...(book.notes || []), { id: Date.now(), date: Date.now(), content: noteText, quote: quoteText, paraIndex: book.progressIndex || 0, pageIndex: currentPage, pageNo: currentPage + 1, chapter: currentChapterNum }]; 
+                updateProgress(book.id, { notes: newNotes }); setNoteText(''); setQuoteText(''); setShowNoteInput(false); setToastMsg("笔记已保存"); setTimeout(() => setToastMsg(null), 2000); 
             };
             
-            const handleTabClick = (tab) => { 
-                if (activeTab === tab && showMenu) { setShowMenu(false); } 
-                else { setActiveTab(tab); setShowMenu(true); } 
-            };
+            const handleTabClick = (tab) => { if (activeTab === tab && showMenu) { setShowMenu(false); } else { setActiveTab(tab); setShowMenu(true); } };
 
-            let menuBgClass = 'bg-white';
-            let menuTextClass = 'text-gray-800';
-            let menuBorderClass = 'border-gray-200';
-            
+            let menuBgClass = 'bg-white'; let menuTextClass = 'text-gray-800'; let menuBorderClass = 'border-gray-200';
             if (isPaperMode) { menuBgClass = 'bg-[#f6f3e8]'; menuTextClass = 'text-[#3b3830]'; menuBorderClass = 'border-[#3b3830]/10'; }
             else if (isSepiaMode) { menuBgClass = 'bg-[#f6ecd5]'; menuTextClass = 'text-[#5b4636]'; menuBorderClass = 'border-[#5b4636]/10'; }
             else if (isDarkMode) { menuBgClass = 'bg-[#1c1c1e]'; menuTextClass = 'text-[#e5e5e7]'; menuBorderClass = 'border-white/10'; }
@@ -939,16 +714,28 @@
             const renderParagraph = (text, isCurrentPara, isSplit, offset = 0) => {
                 const splitClass = isSplit ? 'justify-stretch' : 'justify-normal';
                 
-                if (!isCurrentPara || ttsState !== 'playing' || window.AndroidTTS) {
+                // 只有当正在朗读，且当前段落ID匹配时，才进行高亮渲染
+                if (ttsState !== 'playing' || !currentSentence || currentSentence.paraIdx !== isCurrentPara) {
                     return <span className={splitClass} style={textStyle}>{text}</span>; 
                 }
+
                 const sentences = splitSentences(text); 
-                return <span className={splitClass} style={textStyle}>{sentences.map((s, i) => { 
-                    const globalStart = offset + s.start;
-                    const globalEnd = offset + s.end;
-                    const isActiveSentence = readingCharIndex >= globalStart && readingCharIndex < globalEnd; 
-                    return <span key={i} className={isActiveSentence ? 'sentence-active' : ''}>{s.text}</span>; 
-                })}</span>; 
+                return (
+                    <span className={splitClass} style={textStyle}>
+                        {sentences.map((s, i) => {
+                            // 计算当前句子的全局offset
+                            const globalStart = offset + s.start;
+                            // 只要当前播放句子的起始位置 == 这个句子的起始位置，就高亮
+                            const isActive = currentSentence.start === globalStart;
+                            
+                            return (
+                                <span key={i} className={isActive ? 'sentence-highlight' : ''}>
+                                    {s.text}
+                                </span>
+                            ); 
+                        })}
+                    </span>
+                );
             };
             
             if (!pages[currentPage]) return <div className="h-full flex items-center justify-center">加载中...</div>;
@@ -974,21 +761,13 @@
                         onTouchEnd={handleTouchEnd}
                     >
                         {pages[currentPage].map((item, i) => {
-                        const isActive = item.index === (book.progressIndex || 0);
-                        const isPast = item.index < (book.progressIndex || 0);
-                        let activeClass = isDarkMode ? 'reading-active-dark' : 'reading-active-light';
-                        if (isPaperMode) activeClass = 'reading-active-paper';
-                        if (isSepiaMode) activeClass = 'reading-active-light';
-                        
-                        const isPlaying = ttsState === 'playing';
-                        const finalClass = `mb-4 break-words text-justify-custom ${isPlaying && isActive ? activeClass : ''} ${isPlaying && isPast ? 'read-past' : ''}`;
-
-                        return (
-                            <p key={i} className={finalClass}>
-                                {renderParagraph(item.text, isActive, item.split, item.offset)}
-                            </p>
-                        )
-                    })}</div>
+                            return (
+                                <p key={i} className={`mb-4 break-words text-justify-custom`}>
+                                    {renderParagraph(item.text, item.index, item.split, item.offset)}
+                                </p>
+                            )
+                        })}
+                    </div>
                     
                     {!showMenu && (
                         <>
@@ -1059,24 +838,15 @@
                             {activeTab === 'voice' && <div className="space-y-4 animate-fade-in">
                                 <div className="flex items-center justify-between text-gray-500">
                                     <span className="label-justify">音色</span>
-                                    <div className="flex-1 flex items-center gap-2">
-                                        <div className="relative flex-1">
-                                            <select 
-                                                className={`w-full text-xs p-2 rounded-lg outline-none appearance-none ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-black'}`} 
-                                                value={settings.voiceURI||''} 
-                                                onChange={e => setSettings({...settings, voiceURI: e.target.value})}
-                                            >
-                                                {availableVoices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}
-                                            </select>
-                                            <Icon name="chevron-down" size={14} className="absolute right-2 top-3 pointer-events-none"/>
-                                        </div>
-                                        <button 
-                                            onClick={() => { setToastMsg("正在刷新语音列表..."); loadVoices(); }} 
-                                            className={`p-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-black'}`}
-                                            title="刷新语音列表"
+                                    <div className="flex-1 relative">
+                                        <select 
+                                            className={`w-full text-xs p-2 rounded-lg outline-none appearance-none ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-black'}`} 
+                                            value={settings.voiceURI||''} 
+                                            onChange={e => setSettings({...settings, voiceURI: e.target.value})}
                                         >
-                                            <Icon name="refresh-cw" size={14}/>
-                                        </button>
+                                            {availableVoices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}
+                                        </select>
+                                        <Icon name="chevron-down" size={14} className="absolute right-2 top-3 pointer-events-none"/>
                                     </div>
                                 </div>
                                 <div className="flex items-center justify-between text-gray-500">
@@ -1290,7 +1060,7 @@
                         )}
                     </div>
                 ); 
-            }
+            };
             return (
                 <div className="p-6 pt-safe pb-24 overflow-y-auto h-full">
                     <h1 className="text-3xl font-bold mb-6 pt-4">个人中心</h1>
@@ -1452,6 +1222,7 @@
             );
         };
 
+        // --- App Component (Defined Last) ---
         const App = () => {
             const [view, setView] = useState('shelf');
             const [books, setBooks] = useState(() => {
