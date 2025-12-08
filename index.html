@@ -295,29 +295,58 @@
             useEffect(() => { ttsStateRef.current = ttsState; }, [ttsState]);
             useEffect(() => { settingsRef.current = settings; }, [settings]);
             
-            useEffect(() => { 
-                if(!synth) return; 
-                const load = () => {
-                    let voices = synth.getVoices().filter(v => v.lang.includes('zh') || v.lang.includes('cmn') || v.name.includes('Chinese'));
-                    voices.sort((a, b) => {
-                        const aIsGoogle = a.name.toLowerCase().includes('google');
-                        const bIsGoogle = b.name.toLowerCase().includes('google');
-                        if (aIsGoogle && !bIsGoogle) return -1;
-                        if (!aIsGoogle && bIsGoogle) return 1;
-                        return 0;
-                    });
-                    
-                    // 检测安卓 11+ 权限问题的典型症状：是安卓设备，但获取到的 voices 为空
-                    if (voices.length === 0 && /Android/i.test(navigator.userAgent)) {
-                        console.warn("[LiteReader] 检测到安卓环境下语音列表为空。如果是APP WebView环境，请确保AndroidManifest.xml包含<queries>声明以允许访问TTS服务，或开启混合内容模式。");
-                    }
+            // 修复：增强的语音列表加载逻辑，解决安卓WebView无法获取音色的问题
+            const loadVoices = useCallback(() => {
+                if (!synth) return;
+                
+                let allVoices = synth.getVoices();
+                if (!allVoices || allVoices.length === 0) return;
 
-                    const defaultOption = { name: "系统默认 (自动选择)", voiceURI: "" };
-                    setAvailableVoices([defaultOption, ...voices]);
+                // 优先寻找中文语音
+                let voices = allVoices.filter(v => v.lang.includes('zh') || v.lang.includes('cmn') || v.name.includes('Chinese') || v.name.includes('China'));
+                
+                // 如果找不到中文语音，但系统有其他语音，则为了兼容性显示所有语音（方便用户排查）
+                if (voices.length === 0 && allVoices.length > 0) {
+                    voices = allVoices;
+                }
+
+                voices.sort((a, b) => {
+                    // 优先显示 Google 的高质量语音
+                    const aIsGoogle = a.name.toLowerCase().includes('google');
+                    const bIsGoogle = b.name.toLowerCase().includes('google');
+                    if (aIsGoogle && !bIsGoogle) return -1;
+                    if (!aIsGoogle && bIsGoogle) return 1;
+                    return 0;
+                });
+                
+                const defaultOption = { name: "系统默认 (自动选择)", voiceURI: "" };
+                
+                // 使用函数式更新，避免依赖闭包中的旧状态
+                setAvailableVoices(prev => {
+                    // 简单去重判断，防止频繁刷新导致UI闪烁
+                    if (prev.length === voices.length + 1 && prev[1]?.voiceURI === voices[0]?.voiceURI) {
+                        return prev;
+                    }
+                    return [defaultOption, ...voices];
+                });
+            }, [synth]);
+
+            useEffect(() => { 
+                loadVoices();
+                if (synth && synth.onvoiceschanged !== undefined) {
+                    synth.onvoiceschanged = loadVoices;
+                }
+                
+                // 轮询机制：解决安卓WebView异步加载语音列表不触发事件的问题
+                // 每500ms尝试获取一次，持续5秒
+                const timer = setInterval(loadVoices, 500);
+                const stopTimer = setTimeout(() => clearInterval(timer), 5000);
+
+                return () => { 
+                    clearInterval(timer); 
+                    clearTimeout(stopTimer);
                 }; 
-                load(); 
-                if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = load; 
-            }, []);
+            }, [loadVoices, synth]);
 
             // Initialize Silent Audio for Background Playback
             useEffect(() => {
@@ -348,6 +377,7 @@
                 }
             };
             
+            // 优化分页逻辑：记录 offset (在原段落中的起始位置)
             const pages = useMemo(() => {
                 const containerWidth = window.innerWidth - (settings.pageMargin * 2); 
                 const charsPerLine = Math.floor(containerWidth / settings.fontSize);
@@ -359,6 +389,7 @@
                 const chapterIndices = new Set(book.chapters ? book.chapters.map(c => c.index) : []);
 
                 book.content.forEach((txt, idx) => {
+                    // 统一去除头部空格，确保 TTS 和显示一致
                     const text = txt.replace(/^\s+/, ''); 
                     if (text.length === 0) return; 
                     
@@ -372,6 +403,7 @@
                     const textLines = Math.ceil(text.length / charsPerLine);
                     let remainingText = text;
                     let remainingLinesInPara = textLines;
+                    let currentOffset = 0; // 记录当前切片在原段落(去空格后)中的偏移量
 
                     while (remainingText.length > 0) {
                         const linesLeftOnPage = linesPerPage - currentLines;
@@ -384,7 +416,8 @@
                         }
 
                         if (remainingLinesInPara <= linesLeftOnPage) {
-                            page.push({ text: remainingText, index: idx, split: false });
+                            // 记录 offset
+                            page.push({ text: remainingText, index: idx, offset: currentOffset, split: false });
                             currentLines += remainingLinesInPara;
                             if (currentLines < linesPerPage) currentLines += 0.5; 
                             remainingText = "";
@@ -396,8 +429,11 @@
                             if (cutIdx > remainingText.length) cutIdx = remainingText.length;
 
                             const chunk = remainingText.substring(0, cutIdx);
-                            page.push({ text: chunk, index: idx, split: true });
+                            // 记录 offset
+                            page.push({ text: chunk, index: idx, offset: currentOffset, split: true });
                             
+                            currentOffset += chunk.length; // 更新偏移量
+
                             result.push(page);
                             page = [];
                             currentLines = 0;
@@ -447,7 +483,8 @@
                 }
             }, [ttsState, book]);
 
-            const speak = (idx) => {
+            // 修改 speak 函数签名，支持传入 startOffset (段内偏移量)
+            const speak = (idx, startOffset = 0) => {
                 if (ttsStateRef.current !== 'playing') return; 
                 if (idx >= book.content.length) { setTtsState('stopped'); return; }
                 
@@ -458,8 +495,14 @@
                 }
                 updateProgress(book.id, { progressIndex: idx });
 
-                // 获取要朗读的文本
-                const textToSpeak = book.content[idx];
+                // 获取要朗读的文本，去除头部空格
+                const rawText = book.content[idx];
+                let textToSpeak = rawText ? rawText.replace(/^\s+/, '') : '';
+                
+                // 核心逻辑：如果存在 startOffset，截取文本从中间开始读
+                if (startOffset > 0 && startOffset < textToSpeak.length) {
+                    textToSpeak = textToSpeak.substring(startOffset);
+                }
                 
                 // 检查文本是否为空
                 if (!textToSpeak || textToSpeak.trim().length === 0) {
@@ -470,62 +513,40 @@
                 // 在Android应用中优先使用AndroidTTS (WebView JS Bridge方式)
                 if (window.AndroidTTS) {
                     try {
-                        // 准备TTS参数
                         const speechRate = settingsRef.current.speechRate;
                         const voiceURI = settingsRef.current.voiceURI;
-                        
-                        // 调用AndroidTTS的speak方法
                         window.AndroidTTS.speak(textToSpeak, `rate:${speechRate},voiceURI:${voiceURI}`);
                         
-                        // 设置自动播放下一段的定时器（基于文本长度估算播放时间）
-                        const estimatedDuration = textToSpeak.length * 0.05 * (1 / speechRate); // 平均每个字符0.05秒
+                        // AndroidTTS通常没有实时的Word boundary回调，所以使用时间估算
+                        const estimatedDuration = textToSpeak.length * 0.2 * (1 / speechRate); // 估算
                         setTimeout(() => {
                             if (ttsStateRef.current === 'playing') {
                                 setReadingCharIndex(0);
                                 speak(idx + 1);
                             }
-                        }, estimatedDuration * 1000 + 500); // 增加500ms的缓冲时间
-                        
-                        console.log('Using AndroidTTS to speak:', textToSpeak.substring(0, 50) + '...');
+                        }, estimatedDuration * 1000 + 500); 
                     } catch (e) {
                         console.error('AndroidTTS error:', e);
-                        // 如果AndroidTTS出错，尝试使用Web Speech API
-                        if (synth) {
-                            useSynth(idx);
-                        } else {
-                            // 如果都不可用，显示错误信息并停止
-                            setToastMsg('语音合成不可用');
-                            stopTTS();
-                        }
+                        if (synth) useSynth(idx, textToSpeak, startOffset); // 降级处理
+                        else { setToastMsg('语音合成不可用'); stopTTS(); }
                     }
                 } else if (synth) {
-                    useSynth(idx);
+                    useSynth(idx, textToSpeak, startOffset);
                 } else {
-                    // 如果都不可用，显示错误信息并停止
                     setToastMsg('语音合成不可用');
                     stopTTS();
                 }
             };
 
-            // 使用浏览器的Web Speech API
-            const useSynth = (idx) => {
+            // 修改 useSynth，接收 startOffset 以便修正高亮位置
+            const useSynth = (idx, textToSpeak, startOffset = 0) => {
                 if (!synth || ttsStateRef.current !== 'playing') return;
                 
-                // 1. 移除 setTimeout，直接执行以保持用户手势上下文 (解决 iOS/Chrome 的权限错误)
                 synth.cancel(); 
-
-                const textToSpeak = book.content[idx];
-                
-                // 2. 增加空内容检查
-                if (!textToSpeak || textToSpeak.trim().length === 0) {
-                    // 使用极短的 timeout 避免调用栈溢出
-                    setTimeout(() => speak(idx + 1), 10);
-                    return;
-                }
 
                 try {
                     const u = new SpeechSynthesisUtterance(textToSpeak); 
-                    window.currentUtterance = u; // 防止垃圾回收导致的中断
+                    window.currentUtterance = u; 
                     const curSettings = settingsRef.current; 
                     u.rate = curSettings.speechRate;
                     
@@ -535,23 +556,24 @@
                     }
                     
                     const relevantPages = [];
-                    let accumulatedLength = 0;
                     pages.forEach((page, pgIndex) => {
-                             const segment = page.find(item => item.index === idx);
-                             if (segment) {
+                         page.forEach(item => {
+                             if (item.index === idx) {
                                  relevantPages.push({
                                      pageIndex: pgIndex,
-                                     start: accumulatedLength,
-                                     end: accumulatedLength + segment.text.length
+                                     start: item.offset,
+                                     end: item.offset + item.text.length
                                  });
-                                 accumulatedLength += segment.text.length;
                              }
+                         });
                     });
 
                     u.onboundary = (event) => { 
                         if (event.name === 'sentence' || event.name === 'word') { 
-                            const charIdx = event.charIndex;
+                            // 核心修正：当前高亮索引 = 语音引擎返回的当前句内索引 + 段落起始偏移量
+                            const charIdx = event.charIndex + startOffset;
                             setReadingCharIndex(charIdx); 
+                            
                             const target = relevantPages.find(p => charIdx >= p.start && charIdx < p.end);
                             if (target) {
                                 setCurrentPage(prev => {
@@ -572,20 +594,17 @@
                         }
                     };
                     u.onerror = (e) => { 
+                        if (e.error === 'interrupted' || e.error === 'canceled') return;
+
                         console.error('TTS Playback Error:', e.error);
                         
-                        // 特别处理安卓WebView常见的权限错误
                         if (e.error === 'not-allowed' || e.error === 'network') {
                             setToastMsg("TTS调用失败，请检查系统权限或网络");
                         }
-
-                        // 忽略正常的取消和中断错误
-                        if (e.error !== 'interrupted' && e.error !== 'canceled') {
-                            if(ttsStateRef.current === 'playing') {
-                                // 遇到未知错误尝试跳过当前段落继续
-                                setTimeout(() => speak(idx+1), 200); 
-                            }
-                        } 
+                        
+                        if(ttsStateRef.current === 'playing') {
+                            setTimeout(() => speak(idx+1), 200); 
+                        }
                     };
                     ttsRef.current = u; 
                     synth.speak(u);
@@ -633,14 +652,24 @@
                     const currentP = pages[currentPage]; 
                     
                     let startIdx;
+                    let startOffset = 0;
+
+                    // 修改逻辑：如果是手动导航（如滑动进度条），则强制从当前页面的第一个字符开始读
                     if (manualNavigation && currentP && currentP.length > 0) {
-                        startIdx = currentP[0].index;
+                        const firstItem = currentP[0];
+                        startIdx = firstItem.index;
+                        startOffset = firstItem.offset || 0; // 获取段落偏移量
                         setManualNavigation(false); 
                     } else {
-                        startIdx = (currentP && currentP.length > 0) ? (currentP.find(p => p.index >= (book.progressIndex||0))?.index || currentP[0].index) : (book.progressIndex || 0); 
+                        // 正常恢复播放：寻找当前页对应的进度
+                        startIdx = (book.progressIndex || 0);
+                        // 如果当前页不包含记录的进度段落（防止乱跳），则回退到页首
+                        if (currentP && !currentP.some(p => p.index === startIdx)) {
+                             startIdx = currentP[0].index;
+                        }
                     }
                     
-                    speak(startIdx); 
+                    speak(startIdx, startOffset); 
                 } 
             };
 
@@ -818,14 +847,21 @@
             else if (isSepiaMode) { menuBgClass = 'bg-[#f6ecd5]'; menuTextClass = 'text-[#5b4636]'; menuBorderClass = 'border-[#5b4636]/10'; }
             else if (isDarkMode) { menuBgClass = 'bg-[#1c1c1e]'; menuTextClass = 'text-[#e5e5e7]'; menuBorderClass = 'border-white/10'; }
 
-            const renderParagraph = (text, isCurrentPara, isSplit) => {
+            // 修复: 增加 offset 参数，计算全局索引
+            const renderParagraph = (text, isCurrentPara, isSplit, offset = 0) => {
                 const splitClass = isSplit ? 'justify-stretch' : 'justify-normal';
                 
                 if (!isCurrentPara || ttsState !== 'playing' || window.AndroidTTS) {
                     return <span className={splitClass} style={textStyle}>{text}</span>; 
                 }
                 const sentences = splitSentences(text); 
-                return <span className={splitClass} style={textStyle}>{sentences.map((s, i) => { const isActiveSentence = readingCharIndex >= s.start && readingCharIndex < s.end; return <span key={i} className={isActiveSentence ? 'sentence-active' : ''}>{s.text}</span>; })}</span>; 
+                return <span className={splitClass} style={textStyle}>{sentences.map((s, i) => { 
+                    // 关键修复：加上 offset 才是全局 TTS 索引
+                    const globalStart = offset + s.start;
+                    const globalEnd = offset + s.end;
+                    const isActiveSentence = readingCharIndex >= globalStart && readingCharIndex < globalEnd; 
+                    return <span key={i} className={isActiveSentence ? 'sentence-active' : ''}>{s.text}</span>; 
+                })}</span>; 
             };
             
             if (!pages[currentPage]) return <div className="h-full flex items-center justify-center">加载中...</div>;
@@ -862,7 +898,7 @@
 
                         return (
                             <p key={i} className={finalClass}>
-                                {renderParagraph(item.text, isActive, item.split)}
+                                {renderParagraph(item.text, isActive, item.split, item.offset)}
                             </p>
                         )
                     })}</div>
@@ -910,7 +946,22 @@
                     <div className={`fixed bottom-0 inset-x-0 z-30 transition-transform duration-300 ${showMenu ? 'translate-y-0' : 'translate-y-full'} ${menuBgClass} ${menuTextClass} border-t ${menuBorderClass}`}>
                         <div className="p-6 pb-20 space-y-6 max-h-[45vh] overflow-y-auto no-scrollbar">
                             {activeTab === 'toc' && <div className="animate-fade-in h-full"><div className="flex justify-between items-center mb-4"><span className="font-bold">目录</span><span className="text-xs opacity-60">共 {chapters.length} 章</span></div><div className="space-y-1">{chapters.length === 0 ? <div className="text-center py-10 opacity-50 text-xs">未识别到目录</div> : chapters.map((c, i) => <div key={i} onClick={() => jumpToChapter(c.index)} className={`p-3 text-sm rounded-lg cursor-pointer ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-black/5'}`}>{c.title}</div>)}</div></div>}
-                            {activeTab === 'progress' && <div className="space-y-6 animate-fade-in"><div className="flex justify-between items-center text-center"><div><span className="text-xl font-bold block">{Math.max(1, Math.round(((currentPage+1)/totalPages)*100))}%</span><div className="text-[10px] opacity-60 flex items-center gap-1 justify-center">阅读进度 {countdown && <span className="text-brand ml-1">{Math.floor(countdown/60)}分后关闭</span>}</div></div><div className="w-[1px] h-4 bg-gray-500/30"></div><div className="text-right"><div className="text-xs font-bold text-brand">本次阅读时长: {Math.max(1, Math.floor((Date.now() - startTime)/60000))}分</div><div className="text-[10px] opacity-60">总阅读时长: {Math.max(1, book.totalTime || 0)}分</div></div></div><input type="range" min="0" max={totalPages - 1} value={currentPage} onChange={e => { setCurrentPage(parseInt(e.target.value)); setManualNavigation(true); if(contentRef.current) contentRef.current.scrollTop = 0; }} className={`custom-range ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`} /></div>}
+                            {activeTab === 'progress' && <div className="space-y-6 animate-fade-in"><div className="flex justify-between items-center text-center"><div><span className="text-xl font-bold block">{Math.max(1, Math.round(((currentPage+1)/totalPages)*100))}%</span><div className="text-[10px] opacity-60 flex items-center gap-1 justify-center">阅读进度 {countdown && <span className="text-brand ml-1">{Math.floor(countdown/60)}分后关闭</span>}</div></div><div className="w-[1px] h-4 bg-gray-500/30"></div><div className="text-right"><div className="text-xs font-bold text-brand">本次阅读时长: {Math.max(1, Math.floor((Date.now() - startTime)/60000))}分</div><div className="text-[10px] opacity-60">总阅读时长: {Math.max(1, book.totalTime || 0)}分</div></div></div>
+                            <input 
+                                type="range" 
+                                min="0" 
+                                max={totalPages - 1} 
+                                value={currentPage} 
+                                onChange={e => { 
+                                    setCurrentPage(parseInt(e.target.value)); 
+                                    setManualNavigation(true); // 标记为手动导航
+                                    if (ttsState === 'playing') {
+                                        stopTTS(); // 核心修改：滑动时立即停止朗读
+                                    }
+                                    if(contentRef.current) contentRef.current.scrollTop = 0; 
+                                }} 
+                                className={`custom-range ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`} 
+                            /></div>}
                             {activeTab === 'layout' && <div className="space-y-4 animate-fade-in">
                                 <div className="flex items-center justify-between text-gray-500">
                                     <span className="label-justify">字体大小</span>
@@ -936,7 +987,26 @@
                             {activeTab === 'voice' && <div className="space-y-4 animate-fade-in">
                                 <div className="flex items-center justify-between text-gray-500">
                                     <span className="label-justify">音色</span>
-                                    <div className="flex-1 relative"><select className={`w-full text-xs p-2 rounded-lg outline-none appearance-none ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-black'}`} value={settings.voiceURI||''} onChange={e => setSettings({...settings, voiceURI: e.target.value})}>{availableVoices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}</select><Icon name="chevron-down" size={14} className="absolute right-2 top-3 pointer-events-none"/></div>
+                                    <div className="flex-1 flex items-center gap-2">
+                                        <div className="relative flex-1">
+                                            <select 
+                                                className={`w-full text-xs p-2 rounded-lg outline-none appearance-none ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-black'}`} 
+                                                value={settings.voiceURI||''} 
+                                                onChange={e => setSettings({...settings, voiceURI: e.target.value})}
+                                            >
+                                                {availableVoices.map(v => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}
+                                            </select>
+                                            <Icon name="chevron-down" size={14} className="absolute right-2 top-3 pointer-events-none"/>
+                                        </div>
+                                        {/* 新增：手动刷新语音列表按钮 */}
+                                        <button 
+                                            onClick={() => { setToastMsg("正在刷新语音列表..."); loadVoices(); }} 
+                                            className={`p-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-gray-200 text-black'}`}
+                                            title="刷新语音列表"
+                                        >
+                                            <Icon name="refresh-cw" size={14}/>
+                                        </button>
+                                    </div>
                                 </div>
                                 <div className="flex items-center justify-between text-gray-500">
                                     <span className="label-justify">语速</span>
