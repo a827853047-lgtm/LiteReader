@@ -515,7 +515,13 @@
                     try {
                         const speechRate = settingsRef.current.speechRate;
                         const voiceURI = settingsRef.current.voiceURI;
-                        window.AndroidTTS.speak(textToSpeak, `rate:${speechRate},voiceURI:${voiceURI}`);
+                        
+                        // 【修复】回滚参数格式为对象，兼容旧版接口
+                        // 之前错误写法：`rate:${speechRate},voiceURI:${voiceURI}`
+                        window.AndroidTTS.speak(textToSpeak, {
+                            rate: speechRate,
+                            voiceURI: voiceURI
+                        });
                         
                         // AndroidTTS通常没有实时的Word boundary回调，所以使用时间估算
                         const estimatedDuration = textToSpeak.length * 0.2 * (1 / speechRate); // 估算
@@ -527,7 +533,8 @@
                         }, estimatedDuration * 1000 + 500); 
                     } catch (e) {
                         console.error('AndroidTTS error:', e);
-                        if (synth) useSynth(idx, textToSpeak, startOffset); // 降级处理
+                        // 如果调用失败，自动降级到 Web Speech API
+                        if (synth) useSynth(idx, textToSpeak, startOffset); 
                         else { setToastMsg('语音合成不可用'); stopTTS(); }
                     }
                 } else if (synth) {
